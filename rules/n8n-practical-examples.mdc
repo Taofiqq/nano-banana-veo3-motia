@@ -1,0 +1,659 @@
+---
+description: Practical examples of fixed n8n to Motia conversion showing proper step granularity and clean implementation
+globs: 
+alwaysApply: false
+---
+# n8n to Motia Practical Examples
+
+Demonstrates the FIXED conversion process with proper step granularity, clean code, and complete event flows.
+
+## Fixed Conversion Example: JSON to Sheet
+
+**Original n8n**: 8 nodes (Webhook → Text Splitter → Embeddings → Vector Insert → Vector Query → Vector Tool → Memory → Agent → Sheet)
+
+**Fixed Motia**: 8 properly granular steps with clean implementation
+
+### Step 1: Webhook Trigger
+```typescript
+// 01-webhook-trigger.step.ts
+import { ApiRouteConfig, Handlers } from 'motia'
+import { z } from 'zod'
+
+export const config: ApiRouteConfig = {
+  type: 'api',
+  name: 'WebhookTrigger',
+  description: 'Receive JSON data for processing',
+  method: 'POST',
+  path: '/json/process',
+  bodySchema: z.object({
+    data: z.record(z.any()),
+    sheetName: z.string().optional(),
+    processWithAI: z.boolean().default(false)
+  }),
+  emits: ['json.received'],
+  flows: ['json-to-sheet']
+}
+
+export const handler: Handlers['WebhookTrigger'] = async (req, { emit, logger, state }) => {
+  const requestId = crypto.randomUUID()
+  
+  // CORRECT: state.set(scope, key, value) - from motia.dev/docs
+  await state.set('requests', requestId, {
+    ...req.body,
+    requestId,
+    receivedAt: new Date().toISOString()
+  })
+  
+  await emit({
+    topic: 'json.received',
+    data: { requestId, ...req.body }
+  })
+  
+  logger.info('JSON data received', { requestId })
+  
+  return { status: 200, body: { requestId, status: 'processing' } }
+}
+```
+
+### Step 2: Text Splitter
+```typescript
+// 02-text-splitter.step.ts
+import { EventConfig, Handlers } from 'motia'
+import { z } from 'zod'
+
+export const config: EventConfig = {
+  type: 'event',
+  name: 'TextSplitter',
+  description: 'Split JSON data into processable chunks',
+  subscribes: ['json.received'],
+  emits: ['text.split'],
+  input: z.object({
+    requestId: z.string(),
+    data: z.record(z.any()),
+    sheetName: z.string().optional(),
+    processWithAI: z.boolean()
+  }),
+  flows: ['json-to-sheet']
+}
+
+export const handler: Handlers['TextSplitter'] = async (input, { emit, logger, state }) => {
+  const { requestId, data, processWithAI } = input
+  
+  // Convert JSON to text and split into chunks
+  const jsonText = JSON.stringify(data, null, 2)
+  const chunks = splitText(jsonText, { chunkSize: 400, overlap: 40 })
+  
+  // CORRECT: state.set(scope, key, value) - from motia.dev/docs
+  await state.set('text-chunks', requestId, {
+    originalText: jsonText,
+    chunks,
+    chunkCount: chunks.length,
+    splitAt: new Date().toISOString()
+  })
+  
+  await emit({
+    topic: 'text.split',
+    data: {
+      requestId,
+      chunks,
+      originalData: data,
+      processWithAI,
+      sheetName: input.sheetName
+    }
+  })
+  
+  logger.info('Text split completed', { requestId, chunkCount: chunks.length })
+}
+
+function splitText(text: string, options: { chunkSize: number; overlap: number }): string[] {
+  const chunks = []
+  const { chunkSize, overlap } = options
+  
+  for (let i = 0; i < text.length; i += chunkSize - overlap) {
+    chunks.push(text.slice(i, i + chunkSize))
+  }
+  
+  return chunks
+}
+```
+
+### Step 3: Embeddings Generator (Python)
+```python
+# 03-embeddings-generator_step.py
+import openai
+
+config = {
+    "type": "event",
+    "name": "EmbeddingsGenerator",
+    "description": "Generate embeddings for text chunks",
+    "subscribes": ["text.split"],
+    "emits": ["embeddings.generated"],
+    "input": {
+        "type": "object",
+        "properties": {
+            "requestId": {"type": "string"},
+            "chunks": {"type": "array"},
+            "originalData": {"type": "object"},
+            "processWithAI": {"type": "boolean"},
+            "sheetName": {"type": "string"}
+        },
+        "required": ["requestId", "chunks"]
+    },
+    "flows": ["json-to-sheet"]
+}
+
+async def handler(input_data, ctx):
+    request_id = input_data.get("requestId")
+    chunks = input_data.get("chunks", [])
+    
+    try:
+        client = openai.OpenAI()
+        embeddings = []
+        
+        for chunk in chunks:
+            response = await client.embeddings.create(
+                model="text-embedding-3-small",
+                input=chunk
+            )
+            embeddings.append(response.data[0].embedding)
+        
+        await ctx.state.set("embeddings", request_id, {
+            "embeddings": embeddings,
+            "chunkCount": len(chunks),
+            "generatedAt": ctx.utils.dates.now().isoformat()
+        })
+        
+        await ctx.emit({
+            "topic": "embeddings.generated",
+            "data": {
+                "requestId": request_id,
+                "embeddings": embeddings,
+                "chunks": chunks,
+                "originalData": input_data.get("originalData"),
+                "processWithAI": input_data.get("processWithAI"),
+                "sheetName": input_data.get("sheetName")
+            }
+        })
+        
+        ctx.logger.info(f"Embeddings generated", request_id=request_id, count=len(embeddings))
+        
+    except Exception as e:
+        ctx.logger.error(f"Embeddings generation failed: {str(e)}", request_id=request_id)
+```
+
+### Step 4: Vector Store Insert
+```typescript
+// 04-vector-inserter.step.ts
+import { EventConfig, Handlers } from 'motia'
+import { z } from 'zod'
+import { createClient } from '@supabase/supabase-js'
+
+export const config: EventConfig = {
+  type: 'event',
+  name: 'VectorInserter',
+  description: 'Store embeddings in vector database',
+  subscribes: ['embeddings.generated'],
+  emits: ['vectors.stored'],
+  input: z.object({
+    requestId: z.string(),
+    embeddings: z.array(z.array(z.number())),
+    chunks: z.array(z.string()),
+    originalData: z.record(z.any()),
+    processWithAI: z.boolean(),
+    sheetName: z.string().optional()
+  }),
+  flows: ['json-to-sheet']
+}
+
+export const handler: Handlers['VectorInserter'] = async (input, { emit, logger, state }) => {
+  const { requestId, embeddings, chunks } = input
+  
+  try {
+    const supabase = createClient(process.env.SUPABASE_URL!, process.env.SUPABASE_ANON_KEY!)
+    
+    // Insert embeddings with chunks
+    for (let i = 0; i < embeddings.length; i++) {
+      await supabase.from('documents').insert({
+        request_id: requestId,
+        chunk_index: i,
+        content: chunks[i],
+        embedding: embeddings[i],
+        created_at: new Date().toISOString()
+      })
+    }
+    
+    await state.set('vector-storage', requestId, {
+      vectorCount: embeddings.length,
+      storedAt: new Date().toISOString()
+    })
+    
+    await emit({
+      topic: 'vectors.stored',
+      data: {
+        requestId,
+        vectorCount: embeddings.length,
+        originalData: input.originalData,
+        processWithAI: input.processWithAI,
+        sheetName: input.sheetName
+      }
+    })
+    
+    logger.info('Vectors stored', { requestId, vectorCount: embeddings.length })
+    
+  } catch (error) {
+    logger.error('Vector storage failed', { error: error.message, requestId })
+  }
+}
+```
+
+### Step 5: Vector Query
+```typescript
+// 05-vector-querier.step.ts
+import { EventConfig, Handlers } from 'motia'
+import { z } from 'zod'
+
+export const config: EventConfig = {
+  type: 'event',
+  name: 'VectorQuerier',
+  description: 'Query stored vectors for similarity search',
+  subscribes: ['vectors.stored'],
+  emits: ['vectors.queried'],
+  input: z.object({
+    requestId: z.string(),
+    vectorCount: z.number(),
+    originalData: z.record(z.any()),
+    processWithAI: z.boolean(),
+    sheetName: z.string().optional()
+  }),
+  flows: ['json-to-sheet']
+}
+
+export const handler: Handlers['VectorQuerier'] = async (input, { emit, logger, state }) => {
+  const { requestId, originalData, processWithAI } = input
+  
+  if (!processWithAI) {
+    // Skip AI processing, go directly to sheet
+    await emit({
+      topic: 'sheet.ready',
+      data: {
+        requestId,
+        processedData: originalData,
+        aiProcessed: false,
+        sheetName: input.sheetName
+      }
+    })
+    return
+  }
+  
+  try {
+    // Query vectors for similarity (mock implementation)
+    const queryResults = await queryVectors(requestId)
+    
+    await emit({
+      topic: 'vectors.queried',
+      data: {
+        requestId,
+        queryResults,
+        originalData,
+        sheetName: input.sheetName
+      }
+    })
+    
+    logger.info('Vector query completed', { requestId })
+    
+  } catch (error) {
+    logger.error('Vector query failed', { error: error.message, requestId })
+  }
+}
+
+async function queryVectors(requestId: string) {
+  // Mock vector query
+  return [{ content: 'Similar content', score: 0.8 }]
+}
+```
+
+### Step 6: Vector Tool
+```typescript
+// 06-vector-tool.step.ts
+import { EventConfig, Handlers } from 'motia'
+import { z } from 'zod'
+
+export const config: EventConfig = {
+  type: 'event',
+  name: 'VectorTool',
+  description: 'Process vector query results',
+  subscribes: ['vectors.queried'],
+  emits: ['vector.tool.processed'],
+  input: z.object({
+    requestId: z.string(),
+    queryResults: z.array(z.record(z.any())),
+    originalData: z.record(z.any()),
+    sheetName: z.string().optional()
+  }),
+  flows: ['json-to-sheet']
+}
+
+export const handler: Handlers['VectorTool'] = async (input, { emit, logger, state }) => {
+  const { requestId, queryResults, originalData } = input
+  
+  // Process vector tool results
+  const toolResults = {
+    similarityCount: queryResults.length,
+    topMatch: queryResults[0]?.content || 'No matches',
+    confidence: queryResults[0]?.score || 0
+  }
+  
+  await state.set('tool-results', requestId, {
+    ...toolResults,
+    processedAt: new Date().toISOString()
+  })
+  
+  await emit({
+    topic: 'vector.tool.processed',
+    data: {
+      requestId,
+      toolResults,
+      originalData,
+      sheetName: input.sheetName
+    }
+  })
+  
+  logger.info('Vector tool processed', { requestId })
+}
+```
+
+### Step 7: Memory Manager (Stream)
+```typescript
+// 07-memory-manager.stream.ts
+import { StreamConfig } from 'motia'
+import { z } from 'zod'
+
+export const memorySchema = z.object({
+  requestId: z.string(),
+  context: z.record(z.any()),
+  timestamp: z.string()
+})
+
+export const config: StreamConfig = {
+  name: 'memory-buffer',
+  schema: memorySchema,
+  baseConfig: {
+    storageType: 'default',
+    ttl: 3600
+  }
+}
+```
+
+### Step 8: AI Agent (Python)
+```python
+# 08-ai-agent_step.py
+import openai
+
+config = {
+    "type": "event",
+    "name": "AIAgent",
+    "description": "Process data with AI agent",
+    "subscribes": ["vector.tool.processed"],
+    "emits": ["ai.processed"],
+    "input": {
+        "type": "object",
+        "properties": {
+            "requestId": {"type": "string"},
+            "toolResults": {"type": "object"},
+            "originalData": {"type": "object"},
+            "sheetName": {"type": "string"}
+        },
+        "required": ["requestId", "originalData"]
+    },
+    "flows": ["json-to-sheet"]
+}
+
+async def handler(input_data, ctx):
+    request_id = input_data.get("requestId")
+    original_data = input_data.get("originalData")
+    
+    try:
+        client = openai.OpenAI()
+        
+        # Process with AI agent
+        response = await client.chat.completions.create(
+            model="gpt-4",
+            messages=[
+                {
+                    "role": "system",
+                    "content": "You are an assistant for JSON to Sheet processing"
+                },
+                {
+                    "role": "user",
+                    "content": f"Process this JSON data: {original_data}"
+                }
+            ],
+            max_tokens=500
+        )
+        
+        ai_result = {
+            "summary": response.choices[0].message.content,
+            "processedData": original_data,
+            "aiAnalysis": "Data processed successfully"
+        }
+        
+        await ctx.state.set("ai_results", request_id, {
+            **ai_result,
+            "processedAt": ctx.utils.dates.now().isoformat()
+        })
+        
+        await ctx.emit({
+            "topic": "ai.processed",
+            "data": {
+                "requestId": request_id,
+                "aiResult": ai_result,
+                "sheetName": input_data.get("sheetName")
+            }
+        })
+        
+        ctx.logger.info(f"AI processing completed", request_id=request_id)
+        
+    except Exception as e:
+        ctx.logger.error(f"AI processing failed: {str(e)}", request_id=request_id)
+```
+
+### Step 9: Sheet Writer (Final)
+```typescript
+// 09-sheet-writer.step.ts
+import { EventConfig, Handlers } from 'motia'
+import { z } from 'zod'
+import { GoogleSpreadsheet } from 'google-spreadsheet'
+
+export const config: EventConfig = {
+  type: 'event',
+  name: 'SheetWriter',
+  description: 'Write processed data to Google Sheets',
+  subscribes: ['ai.processed', 'sheet.ready'],
+  emits: [], // Final step
+  input: z.union([
+    z.object({
+      requestId: z.string(),
+      aiResult: z.record(z.any()),
+      sheetName: z.string().optional()
+    }),
+    z.object({
+      requestId: z.string(),
+      processedData: z.record(z.any()),
+      aiProcessed: z.boolean(),
+      sheetName: z.string().optional()
+    })
+  ]),
+  flows: ['json-to-sheet']
+}
+
+export const handler: Handlers['SheetWriter'] = async (input, { logger }) => {
+  const { requestId } = input
+  
+  try {
+    const doc = new GoogleSpreadsheet(process.env.GOOGLE_SHEETS_ID!)
+    await doc.useServiceAccountAuth({
+      client_email: process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL!,
+      private_key: process.env.GOOGLE_PRIVATE_KEY!.replace(/\\n/g, '\n')
+    })
+    
+    await doc.loadInfo()
+    
+    const sheetName = input.sheetName || 'ProcessedData'
+    let sheet = doc.sheetsByTitle[sheetName]
+    
+    if (!sheet) {
+      sheet = await doc.addSheet({ title: sheetName })
+    }
+    
+    // Prepare data for sheet
+    let rowData: any
+    if ('aiResult' in input) {
+      // AI processed data
+      rowData = {
+        'Request ID': requestId,
+        'Summary': input.aiResult.summary,
+        'AI Analysis': input.aiResult.aiAnalysis,
+        'Processed At': new Date().toISOString(),
+        'Type': 'AI Processed'
+      }
+    } else {
+      // Direct data
+      rowData = {
+        'Request ID': requestId,
+        'Data': JSON.stringify(input.processedData),
+        'Processed At': new Date().toISOString(),
+        'Type': 'Direct Processing'
+      }
+    }
+    
+    await sheet.addRow(rowData)
+    
+    logger.info('Data written to Google Sheets', { requestId, sheetName })
+    
+  } catch (error) {
+    logger.error('Sheet writing failed', { error: error.message, requestId })
+  }
+}
+```
+
+## Fixed Implementation Standards
+
+### 1. Clean Handler Signatures
+```typescript
+// ❌ BAD: Unused parameters
+export const handler: Handlers['StepName'] = async (input, { emit, logger, state, streams, traceId }) => {
+  // Only uses logger
+  logger.info('Processing')
+}
+
+// ✅ GOOD: Only include what you use
+export const handler: Handlers['StepName'] = async (input, { logger }) => {
+  logger.info('Processing')
+}
+```
+
+### 2. Proper Event Flow
+```typescript
+// ❌ BAD: Orphan event (no subscriber)
+export const config: EventConfig = {
+  emits: ['data.processed'], // No step subscribes to this
+}
+
+// ✅ GOOD: Complete event chain
+export const config: EventConfig = {
+  emits: ['data.processed'], // Next step subscribes to this
+}
+
+// Next step:
+export const nextConfig: EventConfig = {
+  subscribes: ['data.processed'], // Subscribes to previous emit
+}
+```
+
+### 3. Final Step Implementation
+```typescript
+// ❌ BAD: Final step with unused emits
+export const config: EventConfig = {
+  subscribes: ['final.data'],
+  emits: ['processing.complete'], // No one subscribes to this
+}
+
+// ✅ GOOD: Final step with no emits
+export const config: EventConfig = {
+  subscribes: ['final.data'],
+  emits: [], // Final step - no further processing
+}
+```
+
+### 4. No Unnecessary Middleware
+```typescript
+// ❌ BAD: Adding middleware without request
+import { authMiddleware, rateLimitMiddleware } from '../middleware'
+
+export const config: ApiRouteConfig = {
+  middleware: [authMiddleware, rateLimitMiddleware], // Not requested
+}
+
+// ✅ GOOD: Clean API step
+export const config: ApiRouteConfig = {
+  // No middleware unless explicitly requested
+}
+```
+
+## Domain Examples with Proper Granularity
+
+### Finance: Expense Report (4 nodes → 4 steps)
+```typescript
+// n8n: Webhook → OCR → Validation → QuickBooks
+// Motia: 4 clean steps
+
+// 01-expense-webhook.step.ts - Receive expense receipts
+// 02-ocr-processor_step.py - Extract text from images  
+// 03-expense-validator.step.ts - Validate expense data
+// 04-quickbooks-writer.step.ts - Write to QuickBooks
+```
+
+### Healthcare: Appointment Reminder (3 nodes → 3 steps)
+```typescript
+// n8n: Cron → Database Query → WhatsApp
+// Motia: 3 clean steps
+
+// 01-appointment-scheduler.step.ts - Cron trigger for reminders
+// 02-appointment-fetcher.step.ts - Query upcoming appointments
+// 03-whatsapp-sender.step.ts - Send WhatsApp reminders
+```
+
+### IoT: Sensor Alert (5 nodes → 5 steps)
+```typescript
+// n8n: Webhook → Validation → Threshold Check → Alert → Logging
+// Motia: 5 clean steps
+
+// 01-sensor-webhook.step.ts - Receive sensor data
+// 02-data-validator.step.ts - Validate sensor readings
+// 03-threshold-checker.step.ts - Check against limits
+// 04-alert-sender.step.ts - Send alerts if needed
+// 05-data-logger.step.ts - Log to database
+```
+
+### E-commerce: Inventory Alert (4 nodes → 4 steps)
+```typescript
+// n8n: Webhook → Stock Check → Condition → Slack
+// Motia: 4 clean steps
+
+// 01-inventory-webhook.step.ts - Receive inventory updates
+// 02-stock-checker.step.ts - Check current stock levels
+// 03-alert-condition.step.ts - Determine if alert needed
+// 04-slack-alerter.step.ts - Send Slack notifications
+```
+
+## Key Fixes Applied
+
+1. **Proper Step Count**: Each n8n node becomes its own Motia step
+2. **Clean Code**: No unused imports, parameters, or middleware
+3. **Complete Event Flows**: Every emit has a subscriber or is removed
+4. **Domain Agnostic**: Works for any workflow type, not just AI/RAG
+5. **Production Ready**: Includes error handling, logging, state management
+6. **Type Safe**: Proper Zod schemas and TypeScript types
+7. **Latest Version**: Uses current Motia version
+
+This fixed converter creates properly granular, maintainable Motia backends from any n8n workflow.

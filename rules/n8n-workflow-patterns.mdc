@@ -1,0 +1,949 @@
+---
+description: Complete patterns for converting different types of n8n workflows to Motia backends - covers all domains and workflow types
+globs: 
+alwaysApply: true
+---
+# n8n Workflow Patterns to Motia
+
+Convert ANY type of n8n workflow to scalable Motia backend with proper step breakdown and domain-specific optimizations.
+
+## Workflow Pattern Categories
+
+### 1. Simple Automation Workflows
+**Pattern**: Webhook → Transform → Output
+**Examples**: Price monitors, data loggers, simple notifications
+
+```typescript
+// Example: Currency Rate Monitor (3 n8n nodes → 3 Motia steps)
+
+// 01-currency-webhook.step.ts
+import { ApiRouteConfig, Handlers } from 'motia'
+import { z } from 'zod'
+
+export const config: ApiRouteConfig = {
+  type: 'api',
+  name: 'CurrencyWebhook',
+  description: 'Receive currency rate update requests',
+  method: 'POST',
+  path: '/currency/monitor',
+  bodySchema: z.object({
+    baseCurrency: z.string().length(3),
+    targetCurrency: z.string().length(3),
+    threshold: z.number().optional(),
+    alertChannel: z.string().optional()
+  }),
+  emits: ['currency.request.received'],
+  flows: ['currency-monitoring']
+}
+
+export const handler: Handlers['CurrencyWebhook'] = async (req, { emit, logger, state }) => {
+  const requestId = crypto.randomUUID()
+  const { baseCurrency, targetCurrency, threshold, alertChannel } = req.body
+  
+  await state.set('currency-requests', requestId, {
+    baseCurrency,
+    targetCurrency, 
+    threshold,
+    alertChannel,
+    createdAt: new Date().toISOString()
+  })
+  
+  await emit({
+    topic: 'currency.request.received',
+    data: { requestId, baseCurrency, targetCurrency, threshold, alertChannel }
+  })
+  
+  logger.info('Currency monitor request received', { requestId, baseCurrency, targetCurrency })
+  
+  return {
+    status: 200,
+    body: { requestId, status: 'processing' }
+  }
+}
+
+// 02-currency-fetcher.step.ts
+import { EventConfig, Handlers } from 'motia'
+import { z } from 'zod'
+
+export const config: EventConfig = {
+  type: 'event',
+  name: 'CurrencyFetcher',
+  description: 'Fetch current currency rates from external API',
+  subscribes: ['currency.request.received'],
+  emits: ['currency.rate.fetched'],
+  input: z.object({
+    requestId: z.string(),
+    baseCurrency: z.string(),
+    targetCurrency: z.string(),
+    threshold: z.number().optional(),
+    alertChannel: z.string().optional()
+  }),
+  flows: ['currency-monitoring']
+}
+
+export const handler: Handlers['CurrencyFetcher'] = async (input, { emit, logger, state }) => {
+  const { requestId, baseCurrency, targetCurrency } = input
+  
+  try {
+    // Fetch from currency API
+    const response = await fetch(`https://api.exchangerate-api.com/v4/latest/${baseCurrency}`)
+    const data = await response.json()
+    const currentRate = data.rates[targetCurrency]
+    
+    await state.set('currency-rates', requestId, {
+      baseCurrency,
+      targetCurrency,
+      currentRate,
+      fetchedAt: new Date().toISOString()
+    })
+    
+    await emit({
+      topic: 'currency.rate.fetched',
+      data: {
+        requestId,
+        baseCurrency,
+        targetCurrency,
+        currentRate,
+        threshold: input.threshold,
+        alertChannel: input.alertChannel
+      }
+    })
+    
+    logger.info('Currency rate fetched', { requestId, currentRate })
+    
+  } catch (error) {
+    logger.error('Currency fetch failed', { error: error.message, requestId })
+  }
+}
+
+// 03-currency-alerter.step.ts
+import { EventConfig, Handlers } from 'motia'
+import { z } from 'zod'
+
+export const config: EventConfig = {
+  type: 'event',
+  name: 'CurrencyAlerter',
+  description: 'Send alerts when currency thresholds are met',
+  subscribes: ['currency.rate.fetched'],
+  emits: [], // Final step
+  input: z.object({
+    requestId: z.string(),
+    baseCurrency: z.string(),
+    targetCurrency: z.string(),
+    currentRate: z.number(),
+    threshold: z.number().optional(),
+    alertChannel: z.string().optional()
+  }),
+  flows: ['currency-monitoring']
+}
+
+export const handler: Handlers['CurrencyAlerter'] = async (input, { logger }) => {
+  const { requestId, baseCurrency, targetCurrency, currentRate, threshold, alertChannel } = input
+  
+  // Check if alert should be sent
+  if (threshold && currentRate >= threshold) {
+    // Send alert (Slack, Discord, Email, etc.)
+    await sendAlert({
+      channel: alertChannel || '#alerts',
+      message: `🚨 Currency Alert: ${baseCurrency}/${targetCurrency} reached ${currentRate} (threshold: ${threshold})`,
+      requestId
+    })
+    
+    logger.info('Currency alert sent', { requestId, currentRate, threshold })
+  } else {
+    logger.info('Currency rate within normal range', { requestId, currentRate })
+  }
+}
+
+async function sendAlert(alert: any) {
+  // Implementation based on alert channel type
+  console.log('Alert:', alert.message)
+}
+```
+
+### 2. E-commerce Workflows
+**Pattern**: Webhook → Validation → Processing → Multiple Outputs
+**Examples**: Order processing, inventory management, customer notifications
+
+```typescript
+// Example: Shopify Order SMS (4 n8n nodes → 4 Motia steps)
+
+// 01-shopify-webhook.step.ts
+import { ApiRouteConfig, Handlers } from 'motia'
+import { z } from 'zod'
+
+export const config: ApiRouteConfig = {
+  type: 'api',
+  name: 'ShopifyWebhook',
+  description: 'Receive Shopify order webhooks',
+  method: 'POST',
+  path: '/webhooks/shopify/orders',
+  bodySchema: z.object({
+    id: z.number(),
+    order_number: z.string(),
+    customer: z.object({
+      email: z.string(),
+      phone: z.string().optional(),
+      first_name: z.string(),
+      last_name: z.string()
+    }),
+    line_items: z.array(z.object({
+      title: z.string(),
+      quantity: z.number(),
+      price: z.string()
+    })),
+    total_price: z.string(),
+    financial_status: z.string()
+  }),
+  emits: ['order.received'],
+  flows: ['shopify-order-processing']
+}
+
+export const handler: Handlers['ShopifyWebhook'] = async (req, { emit, logger, state }) => {
+  const orderId = `shopify_${req.body.id}`
+  
+  await state.set('orders', orderId, {
+    ...req.body,
+    receivedAt: new Date().toISOString()
+  })
+  
+  await emit({
+    topic: 'order.received',
+    data: { orderId, ...req.body }
+  })
+  
+  logger.info('Shopify order received', { orderId, orderNumber: req.body.order_number })
+  
+  return { status: 200, body: { received: true } }
+}
+
+// 02-order-validator.step.ts
+import { EventConfig, Handlers } from 'motia'
+import { z } from 'zod'
+
+export const config: EventConfig = {
+  type: 'event',
+  name: 'OrderValidator',
+  description: 'Validate order data and check inventory',
+  subscribes: ['order.received'],
+  emits: ['order.validated', 'order.validation.failed'],
+  input: z.object({
+    orderId: z.string(),
+    id: z.number(),
+    customer: z.record(z.any()),
+    line_items: z.array(z.record(z.any())),
+    total_price: z.string(),
+    financial_status: z.string()
+  }),
+  flows: ['shopify-order-processing']
+}
+
+export const handler: Handlers['OrderValidator'] = async (input, { emit, logger, state }) => {
+  const { orderId, customer, line_items, financial_status } = input
+  
+  try {
+    // Validate customer data
+    if (!customer.phone) {
+      await emit({
+        topic: 'order.validation.failed',
+        data: { orderId, reason: 'No phone number for SMS' }
+      })
+      return
+    }
+    
+    // Validate payment status
+    if (financial_status !== 'paid') {
+      await emit({
+        topic: 'order.validation.failed', 
+        data: { orderId, reason: 'Payment not completed' }
+      })
+      return
+    }
+    
+    // Check inventory for all items
+    const inventoryCheck = await checkInventory(line_items)
+    
+    if (!inventoryCheck.available) {
+      await emit({
+        topic: 'order.validation.failed',
+        data: { orderId, reason: 'Insufficient inventory', items: inventoryCheck.unavailableItems }
+      })
+      return
+    }
+    
+    await emit({
+      topic: 'order.validated',
+      data: { orderId, customer, line_items, inventoryConfirmed: true }
+    })
+    
+    logger.info('Order validated successfully', { orderId })
+    
+  } catch (error) {
+    logger.error('Order validation failed', { error: error.message, orderId })
+  }
+}
+
+async function checkInventory(items: any[]) {
+  // Mock inventory check
+  return { available: true, unavailableItems: [] }
+}
+
+// 03-sms-formatter.step.ts
+import { EventConfig, Handlers } from 'motia'
+import { z } from 'zod'
+
+export const config: EventConfig = {
+  type: 'event',
+  name: 'SMSFormatter',
+  description: 'Format order confirmation SMS message',
+  subscribes: ['order.validated'],
+  emits: ['sms.formatted'],
+  input: z.object({
+    orderId: z.string(),
+    customer: z.record(z.any()),
+    line_items: z.array(z.record(z.any()))
+  }),
+  flows: ['shopify-order-processing']
+}
+
+export const handler: Handlers['SMSFormatter'] = async (input, { emit, logger }) => {
+  const { orderId, customer, line_items } = input
+  
+  // Format SMS message
+  const customerName = `${customer.first_name} ${customer.last_name}`
+  const itemCount = line_items.length
+  const firstItem = line_items[0]?.title || 'items'
+  
+  const smsMessage = `Hi ${customerName}! Your order has been confirmed. You ordered ${itemCount} ${itemCount === 1 ? 'item' : 'items'}${itemCount === 1 ? `: ${firstItem}` : ` including ${firstItem}`}. We'll send updates as your order ships. Thanks for shopping with us!`
+  
+  await emit({
+    topic: 'sms.formatted',
+    data: {
+      orderId,
+      phoneNumber: customer.phone,
+      message: smsMessage,
+      customerName
+    }
+  })
+  
+  logger.info('SMS message formatted', { orderId, messageLength: smsMessage.length })
+}
+
+// 04-sms-sender.step.ts
+import { EventConfig, Handlers } from 'motia'
+import { z } from 'zod'
+
+export const config: EventConfig = {
+  type: 'event',
+  name: 'SMSSender',
+  description: 'Send SMS notifications to customers',
+  subscribes: ['sms.formatted'],
+  emits: [], // Final step
+  input: z.object({
+    orderId: z.string(),
+    phoneNumber: z.string(),
+    message: z.string(),
+    customerName: z.string()
+  }),
+  flows: ['shopify-order-processing']
+}
+
+export const handler: Handlers['SMSSender'] = async (input, { logger }) => {
+  const { orderId, phoneNumber, message, customerName } = input
+  
+  try {
+    // Send SMS using Twilio or similar service
+    await sendSMS({
+      to: phoneNumber,
+      message,
+      from: process.env.SMS_FROM_NUMBER
+    })
+    
+    logger.info('SMS sent successfully', { orderId, phoneNumber, customerName })
+    
+  } catch (error) {
+    logger.error('SMS sending failed', { error: error.message, orderId, phoneNumber })
+  }
+}
+
+async function sendSMS(sms: any) {
+  // Mock SMS sending
+  console.log(`SMS to ${sms.to}: ${sms.message}`)
+}
+```
+
+### 3. Data Processing Workflows
+**Pattern**: Trigger → Extract → Transform → Load → Notify
+**Examples**: ETL pipelines, data synchronization, report generation
+
+```typescript
+// Example: CSV to Database Pipeline (5 n8n nodes → 5 Motia steps)
+
+// 01-csv-webhook.step.ts
+import { ApiRouteConfig, Handlers } from 'motia'
+import { z } from 'zod'
+
+export const config: ApiRouteConfig = {
+  type: 'api',
+  name: 'CSVWebhook',
+  description: 'Receive CSV data for processing',
+  method: 'POST',
+  path: '/data/csv/upload',
+  bodySchema: z.object({
+    csvData: z.string(),
+    tableName: z.string(),
+    mapping: z.record(z.string()).optional(),
+    validateData: z.boolean().default(true)
+  }),
+  emits: ['csv.received'],
+  flows: ['csv-processing']
+}
+
+export const handler: Handlers['CSVWebhook'] = async (req, { emit, logger, state }) => {
+  const requestId = crypto.randomUUID()
+  const { csvData, tableName, mapping, validateData } = req.body
+  
+  await state.set('csv-requests', requestId, {
+    csvData,
+    tableName,
+    mapping,
+    validateData,
+    receivedAt: new Date().toISOString()
+  })
+  
+  await emit({
+    topic: 'csv.received',
+    data: { requestId, csvData, tableName, mapping, validateData }
+  })
+  
+  logger.info('CSV data received', { requestId, tableName, dataSize: csvData.length })
+  
+  return { status: 200, body: { requestId, status: 'processing' } }
+}
+
+// 02-csv-parser.step.ts
+import { EventConfig, Handlers } from 'motia'
+import { z } from 'zod'
+
+export const config: EventConfig = {
+  type: 'event',
+  name: 'CSVParser',
+  description: 'Parse CSV data into structured format',
+  subscribes: ['csv.received'],
+  emits: ['csv.parsed'],
+  input: z.object({
+    requestId: z.string(),
+    csvData: z.string(),
+    tableName: z.string(),
+    mapping: z.record(z.string()).optional(),
+    validateData: z.boolean()
+  }),
+  flows: ['csv-processing']
+}
+
+export const handler: Handlers['CSVParser'] = async (input, { emit, logger, state }) => {
+  const { requestId, csvData, tableName, mapping } = input
+  
+  try {
+    // Parse CSV data
+    const lines = csvData.trim().split('\n')
+    const headers = lines[0].split(',').map(h => h.trim())
+    const rows = lines.slice(1).map(line => {
+      const values = line.split(',').map(v => v.trim())
+      const row: Record<string, string> = {}
+      headers.forEach((header, index) => {
+        const mappedHeader = mapping?.[header] || header
+        row[mappedHeader] = values[index] || ''
+      })
+      return row
+    })
+    
+    await state.set('parsed-csv', requestId, {
+      headers,
+      rows,
+      rowCount: rows.length,
+      parsedAt: new Date().toISOString()
+    })
+    
+    await emit({
+      topic: 'csv.parsed',
+      data: {
+        requestId,
+        tableName,
+        headers,
+        rows,
+        rowCount: rows.length,
+        validateData: input.validateData
+      }
+    })
+    
+    logger.info('CSV parsed successfully', { requestId, rowCount: rows.length })
+    
+  } catch (error) {
+    logger.error('CSV parsing failed', { error: error.message, requestId })
+  }
+}
+
+// 03-data-validator.step.ts
+import { EventConfig, Handlers } from 'motia'
+import { z } from 'zod'
+
+export const config: EventConfig = {
+  type: 'event',
+  name: 'DataValidator',
+  description: 'Validate parsed CSV data',
+  subscribes: ['csv.parsed'],
+  emits: ['data.validated', 'data.validation.failed'],
+  input: z.object({
+    requestId: z.string(),
+    tableName: z.string(),
+    headers: z.array(z.string()),
+    rows: z.array(z.record(z.string())),
+    rowCount: z.number(),
+    validateData: z.boolean()
+  }),
+  flows: ['csv-processing']
+}
+
+export const handler: Handlers['DataValidator'] = async (input, { emit, logger, state }) => {
+  const { requestId, tableName, rows, validateData } = input
+  
+  if (!validateData) {
+    // Skip validation
+    await emit({
+      topic: 'data.validated',
+      data: { requestId, tableName, rows, validationSkipped: true }
+    })
+    return
+  }
+  
+  try {
+    const validationResults = validateRows(rows)
+    
+    if (validationResults.valid) {
+      await emit({
+        topic: 'data.validated',
+        data: {
+          requestId,
+          tableName,
+          rows: validationResults.cleanedRows,
+          validationPassed: true
+        }
+      })
+      
+      logger.info('Data validation passed', { requestId, validRows: validationResults.cleanedRows.length })
+    } else {
+      await emit({
+        topic: 'data.validation.failed',
+        data: {
+          requestId,
+          tableName,
+          errors: validationResults.errors,
+          invalidRows: validationResults.invalidRows
+        }
+      })
+      
+      logger.warn('Data validation failed', { requestId, errorCount: validationResults.errors.length })
+    }
+    
+  } catch (error) {
+    logger.error('Data validation error', { error: error.message, requestId })
+  }
+}
+
+function validateRows(rows: any[]) {
+  const errors: string[] = []
+  const invalidRows: number[] = []
+  const cleanedRows: any[] = []
+  
+  rows.forEach((row, index) => {
+    // Basic validation - check for required fields, data types, etc.
+    if (Object.values(row).every(value => !value || value.trim() === '')) {
+      errors.push(`Row ${index + 1}: Empty row`)
+      invalidRows.push(index)
+    } else {
+      cleanedRows.push(row)
+    }
+  })
+  
+  return {
+    valid: errors.length === 0,
+    errors,
+    invalidRows,
+    cleanedRows
+  }
+}
+
+// 04-database-writer.step.ts
+import { EventConfig, Handlers } from 'motia'
+import { z } from 'zod'
+import { Pool } from 'pg'
+
+export const config: EventConfig = {
+  type: 'event',
+  name: 'DatabaseWriter',
+  description: 'Write validated data to database',
+  subscribes: ['data.validated'],
+  emits: ['data.written'],
+  input: z.object({
+    requestId: z.string(),
+    tableName: z.string(),
+    rows: z.array(z.record(z.string())),
+    validationPassed: z.boolean().optional()
+  }),
+  flows: ['csv-processing']
+}
+
+export const handler: Handlers['DatabaseWriter'] = async (input, { emit, logger, state }) => {
+  const { requestId, tableName, rows } = input
+  const pool = new Pool({ connectionString: process.env.DATABASE_URL })
+  
+  try {
+    // Insert rows into database
+    for (const row of rows) {
+      const columns = Object.keys(row)
+      const values = Object.values(row)
+      const placeholders = values.map((_, i) => `$${i + 1}`).join(', ')
+      
+      const query = `INSERT INTO ${tableName} (${columns.join(', ')}) VALUES (${placeholders})`
+      await pool.query(query, values)
+    }
+    
+    await state.set('database-writes', requestId, {
+      tableName,
+      rowsWritten: rows.length,
+      writtenAt: new Date().toISOString()
+    })
+    
+    await emit({
+      topic: 'data.written',
+      data: {
+        requestId,
+        tableName,
+        rowsWritten: rows.length,
+        success: true
+      }
+    })
+    
+    logger.info('Data written to database', { requestId, tableName, rowsWritten: rows.length })
+    
+  } catch (error) {
+    logger.error('Database write failed', { error: error.message, requestId })
+  } finally {
+    await pool.end()
+  }
+}
+
+// 05-completion-notifier.step.ts
+import { EventConfig, Handlers } from 'motia'
+import { z } from 'zod'
+
+export const config: EventConfig = {
+  type: 'event',
+  name: 'CompletionNotifier',
+  description: 'Send completion notifications',
+  subscribes: ['data.written', 'data.validation.failed'],
+  emits: [], // Final step
+  input: z.union([
+    z.object({
+      requestId: z.string(),
+      tableName: z.string(),
+      rowsWritten: z.number(),
+      success: z.literal(true)
+    }),
+    z.object({
+      requestId: z.string(),
+      tableName: z.string(),
+      errors: z.array(z.string()),
+      invalidRows: z.array(z.number())
+    })
+  ]),
+  flows: ['csv-processing']
+}
+
+export const handler: Handlers['CompletionNotifier'] = async (input, { logger }) => {
+  const { requestId } = input
+  
+  if ('success' in input && input.success) {
+    // Success notification
+    await sendNotification({
+      type: 'success',
+      message: `✅ CSV processing completed: ${input.rowsWritten} rows written to ${input.tableName}`,
+      requestId
+    })
+    
+    logger.info('CSV processing completed', { requestId, rowsWritten: input.rowsWritten })
+  } else {
+    // Error notification
+    await sendNotification({
+      type: 'error',
+      message: `❌ CSV processing failed: ${input.errors?.length || 0} validation errors`,
+      requestId
+    })
+    
+    logger.error('CSV processing failed', { requestId, errorCount: input.errors?.length || 0 })
+  }
+}
+
+async function sendNotification(notification: any) {
+  // Send via email, Slack, etc.
+  console.log('Notification:', notification.message)
+}
+```
+
+### 4. IoT/Monitoring Workflows
+**Pattern**: Data Collection → Analysis → Alerting → Logging
+**Examples**: Sensor monitoring, system health checks, anomaly detection
+
+```typescript
+// Example: Sensor Monitoring (4 n8n nodes → 4 Motia steps)
+
+// 01-sensor-webhook.step.ts
+import { ApiRouteConfig, Handlers } from 'motia'
+import { z } from 'zod'
+
+export const config: ApiRouteConfig = {
+  type: 'api',
+  name: 'SensorWebhook',
+  description: 'Receive IoT sensor data',
+  method: 'POST',
+  path: '/iot/sensors/data',
+  bodySchema: z.object({
+    deviceId: z.string(),
+    sensorType: z.string(),
+    value: z.number(),
+    unit: z.string(),
+    timestamp: z.string(),
+    location: z.string().optional()
+  }),
+  emits: ['sensor.data.received'],
+  flows: ['sensor-monitoring']
+}
+
+// 02-data-analyzer.step.ts
+import { EventConfig, Handlers } from 'motia'
+import { z } from 'zod'
+
+export const config: EventConfig = {
+  type: 'event',
+  name: 'DataAnalyzer',
+  description: 'Analyze sensor data for anomalies',
+  subscribes: ['sensor.data.received'],
+  emits: ['data.analyzed'],
+  flows: ['sensor-monitoring']
+}
+
+// 03-threshold-checker.step.ts
+import { EventConfig, Handlers } from 'motia'
+import { z } from 'zod'
+
+export const config: EventConfig = {
+  type: 'event',
+  name: 'ThresholdChecker',
+  description: 'Check if sensor values exceed thresholds',
+  subscribes: ['data.analyzed'],
+  emits: ['threshold.exceeded', 'threshold.normal'],
+  flows: ['sensor-monitoring']
+}
+
+// 04-alert-sender.step.ts
+import { EventConfig, Handlers } from 'motia'
+import { z } from 'zod'
+
+export const config: EventConfig = {
+  type: 'event',
+  name: 'AlertSender',
+  description: 'Send alerts when thresholds are exceeded',
+  subscribes: ['threshold.exceeded'],
+  emits: [], // Final step
+  flows: ['sensor-monitoring']
+}
+```
+
+### 5. Social Media Workflows
+**Pattern**: Content → Analysis → Multi-Platform Distribution
+**Examples**: Auto-posting, content moderation, engagement tracking
+
+```typescript
+// Example: Multi-Platform Posting (5 n8n nodes → 5 Motia steps)
+
+// 01-content-webhook.step.ts - Receive content
+// 02-content-analyzer_step.py - AI content analysis
+// 03-platform-router.step.ts - Route to different platforms
+// 04-twitter-poster.step.ts - Post to Twitter
+// 05-linkedin-poster.step.ts - Post to LinkedIn
+```
+
+### 6. Finance/Accounting Workflows
+**Pattern**: Transaction → Validation → Processing → Reporting
+**Examples**: Invoice processing, expense tracking, payment automation
+
+```typescript
+// Example: Invoice Processing (6 n8n nodes → 6 Motia steps)
+
+// 01-invoice-webhook.step.ts - Receive invoice data
+// 02-ocr-processor_step.py - Extract text from invoice images
+// 03-data-extractor_step.py - Extract structured data using AI
+// 04-validation-engine.step.ts - Validate extracted data
+// 05-accounting-writer.step.ts - Write to accounting system
+// 06-approval-notifier.step.ts - Send for approval if needed
+```
+
+## Step Generation Rules
+
+### 1. Naming Convention
+```typescript
+function generateStepFileName(nodeIndex: number, node: any): string {
+  const stepNumber = String(nodeIndex + 1).padStart(2, '0')
+  const stepName = generateStepName(node)
+  const language = getLanguageForNode(node.type)
+  const extension = language === 'python' ? 'py' : 'ts'
+  
+  return `${stepNumber}-${stepName}.step.${extension}`
+}
+
+function generateStepName(node: any): string {
+  // Generate descriptive names based on node type and context
+  const typeMap = {
+    'n8n-nodes-base.webhook': 'webhook-trigger',
+    'n8n-nodes-base.httpRequest': 'api-client',
+    'n8n-nodes-base.function': 'data-transformer',
+    'n8n-nodes-base.if': 'condition-checker',
+    'n8n-nodes-base.switch': 'data-router',
+    'n8n-nodes-base.googleSheets': 'sheets-writer',
+    'n8n-nodes-base.slack': 'slack-notifier',
+    'n8n-nodes-base.email': 'email-sender',
+    'n8n-nodes-base.postgres': 'database-writer',
+    'n8n-nodes-base.redis': 'cache-manager'
+  }
+  
+  return typeMap[node.type] || sanitizeName(node.name) || 'processor'
+}
+```
+
+### 2. Event Topic Generation
+```typescript
+function generateEventTopics(nodes: any[], connections: any): EventMap {
+  const topics = new Map()
+  
+  // Generate topics based on node connections
+  for (const [sourceNodeName, nodeConnections] of Object.entries(connections)) {
+    const sourceNode = nodes.find(n => n.name === sourceNodeName)
+    
+    for (const [connectionType, targetGroups] of Object.entries(nodeConnections)) {
+      for (const targets of targetGroups) {
+        for (const target of targets) {
+          const targetNode = nodes.find(n => n.name === target.node)
+          
+          const topicName = generateTopicName(sourceNode, targetNode, connectionType)
+          topics.set(`${sourceNodeName}->${target.node}`, topicName)
+        }
+      }
+    }
+  }
+  
+  return topics
+}
+
+function generateTopicName(sourceNode: any, targetNode: any, connectionType: string): string {
+  const sourceAction = getNodeAction(sourceNode.type)
+  
+  if (connectionType === 'onError') {
+    return `${sourceAction}.failed`
+  }
+  
+  // Generate semantic topic based on source node action
+  switch (sourceNode.type) {
+    case 'n8n-nodes-base.webhook':
+      return 'webhook.received'
+    case 'n8n-nodes-base.function':
+      return 'data.transformed'
+    case 'n8n-nodes-base.httpRequest':
+      return 'api.completed'
+    case 'n8n-nodes-base.if':
+      return connectionType === 'true' ? 'condition.true' : 'condition.false'
+    case '@n8n/n8n-nodes-langchain.embeddingsOpenAi':
+      return 'embeddings.generated'
+    case '@n8n/n8n-nodes-langchain.agent':
+      return 'agent.completed'
+    default:
+      return `${sourceAction}.completed`
+  }
+}
+```
+
+### 3. Language Selection Logic
+```typescript
+function getLanguageForNode(nodeType: string): 'typescript' | 'python' | 'javascript' {
+  // AI/ML nodes use Python
+  if (nodeType.includes('langchain') && 
+      (nodeType.includes('embeddings') || nodeType.includes('lmChat') || nodeType.includes('agent'))) {
+    return 'python'
+  }
+  
+  // Custom code nodes can use JavaScript or Python based on content
+  if (nodeType === 'n8n-nodes-base.code') {
+    return 'javascript' // Default, can be changed based on code analysis
+  }
+  
+  // Function nodes use JavaScript
+  if (nodeType === 'n8n-nodes-base.function') {
+    return 'javascript'
+  }
+  
+  // Everything else uses TypeScript
+  return 'typescript'
+}
+```
+
+## Complete Conversion Examples
+
+### Example: RSS to Slack (Simple 3-step workflow)
+```typescript
+// n8n: RSS Trigger → Function (format) → Slack
+// Motia: 3 steps
+
+// 01-rss-fetcher.step.ts (Cron trigger)
+export const config: CronConfig = {
+  type: 'cron',
+  name: 'RSSFetcher',
+  cron: '0 */6 * * *', // Every 6 hours
+  emits: ['rss.fetched'],
+  flows: ['rss-to-slack']
+}
+
+// 02-rss-formatter.step.js (Function processing)
+export const config: EventConfig = {
+  type: 'event',
+  name: 'RSSFormatter',
+  subscribes: ['rss.fetched'],
+  emits: ['rss.formatted'],
+  flows: ['rss-to-slack']
+}
+
+// 03-slack-poster.step.ts (Slack output)
+export const config: EventConfig = {
+  type: 'event',
+  name: 'SlackPoster',
+  subscribes: ['rss.formatted'],
+  emits: [], // Final step
+  flows: ['rss-to-slack']
+}
+```
+
+### Example: Order Processing (Complex 8-step workflow)
+```typescript
+// n8n: Webhook → Validation → Payment → Inventory → Shipping → Email → SMS → Logging
+// Motia: 8 steps
+
+// 01-order-webhook.step.ts
+// 02-order-validator.step.ts
+// 03-payment-processor.step.ts
+// 04-inventory-manager.step.ts
+// 05-shipping-calculator.step.ts
+// 06-email-sender.step.ts
+// 07-sms-sender.step.ts
+// 08-order-logger.step.ts
+```
+
+This ensures each n8n node gets its own focused Motia step, creating properly granular, maintainable workflows.

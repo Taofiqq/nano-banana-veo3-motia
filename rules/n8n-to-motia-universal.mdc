@@ -1,0 +1,1011 @@
+---
+description: Universal n8n to Motia converter - transforms ANY workflow type into scalable backends with proper step granularity (one node = one step)
+globs: 
+alwaysApply: true
+---
+# Universal n8n to Motia Converter
+
+Transform ANY n8n workflow into production-ready Motia backends with proper step granularity. Each significant n8n node becomes its own Motia step.
+
+## CORE CONVERSION PRINCIPLES
+
+### 1. One Node = One Step Rule
+- **CRITICAL**: Each n8n node becomes its own Motia step file
+- **Example**: 8 n8n nodes → 8 Motia step files (numbered 01-08)
+- **NO Consolidation**: Don't merge multiple nodes into one step
+- **Atomic Steps**: Each step has single responsibility
+
+### 2. Step Implementation Standards
+- **Clean Code**: Only import what you use (EventConfig, Handlers, ApiRouteConfig)
+- **No Middleware**: Don't add middleware unless explicitly requested
+- **Minimal Context**: Only use context parameters actually needed in handler
+- **Version**: Use Motia "^0.7.1-beta.132"
+
+### 3. Event Flow Integrity
+- **Complete Chains**: Every emit must have a corresponding subscribe
+- **No Orphan Events**: Remove emits with no subscribers
+- **Final Steps**: Last step uses emits: [] or only monitoring events
+- **Descriptive Topics**: Use semantic names (webhook.received, data.processed, etc.)
+
+## Universal Node Mapping
+
+### Core n8n Nodes → Motia Steps
+
+```typescript
+// Conversion mapping for ALL n8n node types
+const UNIVERSAL_NODE_MAPPING = {
+  // === TRIGGERS ===
+  'n8n-nodes-base.webhook': {
+    motiaType: 'ApiStep',
+    language: 'typescript',
+    template: 'webhook-api-step',
+    generates: 'HTTP endpoint with validation'
+  },
+  'n8n-nodes-base.cron': {
+    motiaType: 'CronStep', 
+    language: 'typescript',
+    template: 'cron-step',
+    generates: 'Scheduled task execution'
+  },
+  'n8n-nodes-base.manualTrigger': {
+    motiaType: 'NoopStep',
+    language: 'typescript', 
+    template: 'manual-trigger-step',
+    generates: 'Manual workflow initiation'
+  },
+  
+  // === DATA PROCESSING ===
+  'n8n-nodes-base.code': {
+    motiaType: 'EventStep',
+    language: 'javascript', // or python based on code content
+    template: 'code-processor-step',
+    generates: 'Custom logic execution'
+  },
+  'n8n-nodes-base.function': {
+    motiaType: 'EventStep',
+    language: 'javascript',
+    template: 'function-processor-step', 
+    generates: 'Data transformation logic'
+  },
+  'n8n-nodes-base.set': {
+    motiaType: 'EventStep',
+    language: 'typescript',
+    template: 'data-setter-step',
+    generates: 'Data manipulation and setting'
+  },
+  'n8n-nodes-base.if': {
+    motiaType: 'EventStep',
+    language: 'typescript',
+    template: 'conditional-step',
+    generates: 'Conditional logic branching'
+  },
+  'n8n-nodes-base.switch': {
+    motiaType: 'EventStep', 
+    language: 'typescript',
+    template: 'switch-router-step',
+    generates: 'Multi-path data routing'
+  },
+  'n8n-nodes-base.merge': {
+    motiaType: 'EventStep',
+    language: 'typescript',
+    template: 'data-merger-step',
+    generates: 'Data aggregation and merging'
+  },
+  'n8n-nodes-base.splitInBatches': {
+    motiaType: 'EventStep',
+    language: 'typescript',
+    template: 'batch-splitter-step',
+    generates: 'Batch processing logic'
+  },
+  'n8n-nodes-base.wait': {
+    motiaType: 'EventStep',
+    language: 'typescript',
+    template: 'delay-step',
+    generates: 'Timing and delay control'
+  },
+  
+  // === EXTERNAL INTEGRATIONS ===
+  'n8n-nodes-base.httpRequest': {
+    motiaType: 'EventStep',
+    language: 'typescript',
+    template: 'http-client-step',
+    generates: 'External API integration'
+  },
+  'n8n-nodes-base.googleSheets': {
+    motiaType: 'EventStep',
+    language: 'typescript', 
+    template: 'sheets-integration-step',
+    generates: 'Google Sheets operations'
+  },
+  'n8n-nodes-base.slack': {
+    motiaType: 'EventStep',
+    language: 'typescript',
+    template: 'slack-integration-step',
+    generates: 'Slack messaging and alerts'
+  },
+  'n8n-nodes-base.email': {
+    motiaType: 'EventStep',
+    language: 'typescript',
+    template: 'email-step',
+    generates: 'Email sending and processing'
+  },
+  'n8n-nodes-base.discord': {
+    motiaType: 'EventStep',
+    language: 'typescript',
+    template: 'discord-integration-step',
+    generates: 'Discord bot operations'
+  },
+  'n8n-nodes-base.telegram': {
+    motiaType: 'EventStep',
+    language: 'typescript',
+    template: 'telegram-bot-step',
+    generates: 'Telegram messaging'
+  },
+  'n8n-nodes-base.whatsApp': {
+    motiaType: 'EventStep',
+    language: 'typescript',
+    template: 'whatsapp-step',
+    generates: 'WhatsApp integration'
+  },
+  
+  // === DATABASES ===
+  'n8n-nodes-base.mysql': {
+    motiaType: 'EventStep',
+    language: 'typescript',
+    template: 'mysql-step',
+    generates: 'MySQL database operations'
+  },
+  'n8n-nodes-base.postgres': {
+    motiaType: 'EventStep',
+    language: 'typescript',
+    template: 'postgres-step', 
+    generates: 'PostgreSQL operations'
+  },
+  'n8n-nodes-base.redis': {
+    motiaType: 'EventStep',
+    language: 'typescript',
+    template: 'redis-step',
+    generates: 'Redis cache operations'
+  },
+  'n8n-nodes-base.mongodb': {
+    motiaType: 'EventStep',
+    language: 'typescript',
+    template: 'mongodb-step',
+    generates: 'MongoDB operations'
+  },
+  
+  // === BUSINESS APPS ===
+  'n8n-nodes-base.airtable': {
+    motiaType: 'EventStep',
+    language: 'typescript',
+    template: 'airtable-step',
+    generates: 'Airtable database integration'
+  },
+  'n8n-nodes-base.notion': {
+    motiaType: 'EventStep',
+    language: 'typescript',
+    template: 'notion-step',
+    generates: 'Notion workspace operations'
+  },
+  'n8n-nodes-base.trello': {
+    motiaType: 'EventStep',
+    language: 'typescript',
+    template: 'trello-step',
+    generates: 'Trello project management'
+  },
+  'n8n-nodes-base.github': {
+    motiaType: 'EventStep',
+    language: 'typescript',
+    template: 'github-step',
+    generates: 'GitHub repository operations'
+  },
+  'n8n-nodes-base.shopify': {
+    motiaType: 'EventStep',
+    language: 'typescript',
+    template: 'shopify-step',
+    generates: 'E-commerce operations'
+  },
+  'n8n-nodes-base.stripe': {
+    motiaType: 'EventStep',
+    language: 'typescript',
+    template: 'stripe-step',
+    generates: 'Payment processing'
+  },
+  'n8n-nodes-base.paypal': {
+    motiaType: 'EventStep',
+    language: 'typescript',
+    template: 'paypal-step',
+    generates: 'PayPal integration'
+  },
+  'n8n-nodes-base.hubspot': {
+    motiaType: 'EventStep',
+    language: 'typescript',
+    template: 'hubspot-step',
+    generates: 'CRM operations'
+  },
+  'n8n-nodes-base.salesforce': {
+    motiaType: 'EventStep',
+    language: 'typescript',
+    template: 'salesforce-step',
+    generates: 'Salesforce CRM integration'
+  },
+  'n8n-nodes-base.mailchimp': {
+    motiaType: 'EventStep',
+    language: 'typescript',
+    template: 'mailchimp-step',
+    generates: 'Email marketing operations'
+  },
+  
+  // === AI/ML NODES ===
+  '@n8n/n8n-nodes-langchain.textSplitterCharacterTextSplitter': {
+    motiaType: 'EventStep',
+    language: 'typescript',
+    template: 'text-splitter-step',
+    generates: 'Text chunking and preprocessing'
+  },
+  '@n8n/n8n-nodes-langchain.embeddingsOpenAi': {
+    motiaType: 'EventStep',
+    language: 'python',
+    template: 'openai-embeddings-step',
+    generates: 'OpenAI embedding generation'
+  },
+  '@n8n/n8n-nodes-langchain.embeddingsCohere': {
+    motiaType: 'EventStep',
+    language: 'python',
+    template: 'cohere-embeddings-step',
+    generates: 'Cohere embedding generation'
+  },
+  '@n8n/n8n-nodes-langchain.embeddingsHuggingFace': {
+    motiaType: 'EventStep',
+    language: 'python',
+    template: 'huggingface-embeddings-step',
+    generates: 'HuggingFace embedding generation'
+  },
+  '@n8n/n8n-nodes-langchain.vectorStoreSupabase': {
+    motiaType: 'EventStep',
+    language: 'typescript',
+    template: 'supabase-vector-step',
+    generates: 'Supabase vector operations'
+  },
+  '@n8n/n8n-nodes-langchain.vectorStorePinecone': {
+    motiaType: 'EventStep',
+    language: 'typescript',
+    template: 'pinecone-vector-step',
+    generates: 'Pinecone vector operations'
+  },
+  '@n8n/n8n-nodes-langchain.vectorStoreWeaviate': {
+    motiaType: 'EventStep',
+    language: 'typescript',
+    template: 'weaviate-vector-step',
+    generates: 'Weaviate vector operations'
+  },
+  '@n8n/n8n-nodes-langchain.lmChatOpenAi': {
+    motiaType: 'EventStep',
+    language: 'python',
+    template: 'openai-chat-step',
+    generates: 'OpenAI chat completion'
+  },
+  '@n8n/n8n-nodes-langchain.lmChatAnthropic': {
+    motiaType: 'EventStep',
+    language: 'python',
+    template: 'anthropic-chat-step',
+    generates: 'Anthropic Claude chat'
+  },
+  '@n8n/n8n-nodes-langchain.agent': {
+    motiaType: 'EventStep',
+    language: 'python',
+    template: 'rag-agent-step',
+    generates: 'RAG agent processing'
+  },
+  '@n8n/n8n-nodes-langchain.memoryBufferWindow': {
+    motiaType: 'Stream',
+    language: 'typescript',
+    template: 'memory-stream',
+    generates: 'Conversation memory management'
+  }
+}
+```
+
+## Step Generation Templates
+
+### 1. Webhook API Step Template
+```typescript
+// Template: webhook-api-step
+// Generated from: n8n-nodes-base.webhook
+import { ApiRouteConfig, Handlers } from 'motia'
+import { z } from 'zod'
+
+export const config: ApiRouteConfig = {
+  type: 'api',
+  name: '{STEP_NAME}',
+  description: '{DESCRIPTION}',
+  method: '{HTTP_METHOD}',
+  path: '{ENDPOINT_PATH}',
+  bodySchema: z.object({
+    // Auto-generated based on workflow context
+    {BODY_SCHEMA}
+  }),
+  responseSchema: {
+    200: z.object({
+      requestId: z.string(),
+      status: z.string(),
+      message: z.string()
+    }),
+    400: z.object({ error: z.string() }),
+    500: z.object({ error: z.string() })
+  },
+  emits: ['{NEXT_TOPIC}'],
+  flows: ['{FLOW_NAME}']
+}
+
+export const handler: Handlers['{STEP_NAME}'] = async (req, { emit, logger, state }) => {
+  const requestId = crypto.randomUUID()
+  
+  try {
+    // Store request data
+    await state.set('requests', requestId, {
+      ...req.body,
+      requestId,
+      receivedAt: new Date().toISOString()
+    })
+    
+    // Emit to next step
+    await emit({
+      topic: '{NEXT_TOPIC}',
+      data: {
+        requestId,
+        ...req.body
+      }
+    })
+    
+    logger.info('Webhook processed', { requestId })
+    
+    return {
+      status: 200,
+      body: {
+        requestId,
+        status: 'processing',
+        message: 'Request received successfully'
+      }
+    }
+    
+  } catch (error) {
+    logger.error('Webhook processing failed', { error: error.message, requestId })
+    return { status: 500, body: { error: 'Processing failed' } }
+  }
+}
+```
+
+### 2. HTTP Request Step Template
+```typescript
+// Template: http-client-step
+// Generated from: n8n-nodes-base.httpRequest
+import { EventConfig, Handlers } from 'motia'
+import { z } from 'zod'
+
+export const config: EventConfig = {
+  type: 'event',
+  name: '{STEP_NAME}',
+  description: '{DESCRIPTION}',
+  subscribes: ['{PREVIOUS_TOPIC}'],
+  emits: ['{NEXT_TOPIC}'],
+  input: z.object({
+    requestId: z.string(),
+    // Auto-generated based on previous step output
+    {INPUT_SCHEMA}
+  }),
+  flows: ['{FLOW_NAME}']
+}
+
+export const handler: Handlers['{STEP_NAME}'] = async (input, { emit, logger, state }) => {
+  const { requestId } = input
+  
+  try {
+    // Make HTTP request based on n8n configuration
+    const response = await fetch('{API_URL}', {
+      method: '{HTTP_METHOD}',
+      headers: {
+        'Content-Type': 'application/json',
+        // Add auth headers from n8n credentials
+        {AUTH_HEADERS}
+      },
+      body: JSON.stringify({
+        // Map input data to API format
+        {REQUEST_BODY}
+      })
+    })
+    
+    const result = await response.json()
+    
+    // Store result
+    await state.set('http-results', requestId, {
+      url: '{API_URL}',
+      method: '{HTTP_METHOD}',
+      result,
+      status: response.status,
+      completedAt: new Date().toISOString()
+    })
+    
+    // Emit to next step
+    await emit({
+      topic: '{NEXT_TOPIC}',
+      data: {
+        requestId,
+        httpResult: result,
+        originalInput: input
+      }
+    })
+    
+    logger.info('HTTP request completed', { requestId, status: response.status })
+    
+  } catch (error) {
+    logger.error('HTTP request failed', { error: error.message, requestId })
+    
+    // Emit error event if configured
+    {ERROR_EMIT}
+  }
+}
+```
+
+### 3. Google Sheets Step Template
+```typescript
+// Template: sheets-integration-step
+// Generated from: n8n-nodes-base.googleSheets
+import { EventConfig, Handlers } from 'motia'
+import { z } from 'zod'
+import { GoogleSpreadsheet } from 'google-spreadsheet'
+
+export const config: EventConfig = {
+  type: 'event',
+  name: '{STEP_NAME}',
+  description: '{DESCRIPTION}',
+  subscribes: ['{PREVIOUS_TOPIC}'],
+  emits: [], // Final step - no further processing
+  input: z.object({
+    requestId: z.string(),
+    // Auto-generated based on data to log
+    {INPUT_SCHEMA}
+  }),
+  flows: ['{FLOW_NAME}']
+}
+
+export const handler: Handlers['{STEP_NAME}'] = async (input, { logger, state }) => {
+  const { requestId } = input
+  
+  try {
+    // Initialize Google Sheets
+    const doc = new GoogleSpreadsheet('{SHEET_ID}')
+    await doc.useServiceAccountAuth({
+      client_email: process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL!,
+      private_key: process.env.GOOGLE_PRIVATE_KEY!.replace(/\\n/g, '\n')
+    })
+    
+    await doc.loadInfo()
+    
+    // Get or create sheet
+    let sheet = doc.sheetsByTitle['{SHEET_NAME}']
+    if (!sheet) {
+      sheet = await doc.addSheet({ title: '{SHEET_NAME}' })
+      await sheet.setHeaderRow([{HEADER_COLUMNS}])
+    }
+    
+    // Prepare row data from input
+    const rowData = {
+      {ROW_DATA_MAPPING}
+    }
+    
+    // Add row to sheet
+    await sheet.addRow(rowData)
+    
+    // Update state
+    await state.set('sheets-logs', requestId, {
+      sheetId: '{SHEET_ID}',
+      sheetName: '{SHEET_NAME}',
+      rowData,
+      loggedAt: new Date().toISOString()
+    })
+    
+    logger.info('Data logged to Google Sheets', { requestId, sheetName: '{SHEET_NAME}' })
+    
+  } catch (error) {
+    logger.error('Google Sheets logging failed', { error: error.message, requestId })
+  }
+}
+```
+
+### 4. Slack Notification Step Template
+```typescript
+// Template: slack-integration-step
+// Generated from: n8n-nodes-base.slack
+import { EventConfig, Handlers } from 'motia'
+import { z } from 'zod'
+import { WebClient } from '@slack/web-api'
+
+export const config: EventConfig = {
+  type: 'event',
+  name: '{STEP_NAME}',
+  description: '{DESCRIPTION}',
+  subscribes: ['{PREVIOUS_TOPIC}'],
+  emits: [], // Final step - no further processing
+  input: z.object({
+    requestId: z.string(),
+    // Auto-generated based on error/success data
+    {INPUT_SCHEMA}
+  }),
+  flows: ['{FLOW_NAME}']
+}
+
+export const handler: Handlers['{STEP_NAME}'] = async (input, { logger }) => {
+  const { requestId } = input
+  
+  try {
+    const slack = new WebClient(process.env.SLACK_BOT_TOKEN)
+    
+    // Send message based on n8n configuration
+    await slack.chat.postMessage({
+      channel: '{SLACK_CHANNEL}',
+      text: '{MESSAGE_TEMPLATE}',
+      blocks: [
+        {
+          type: 'section',
+          text: {
+            type: 'mrkdwn',
+            text: `{FORMATTED_MESSAGE}`
+          }
+        }
+      ]
+    })
+    
+    logger.info('Slack notification sent', { requestId, channel: '{SLACK_CHANNEL}' })
+    
+  } catch (error) {
+    logger.error('Slack notification failed', { error: error.message, requestId })
+  }
+}
+```
+
+### 5. Data Transformation Step Template
+```typescript
+// Template: function-processor-step
+// Generated from: n8n-nodes-base.function or n8n-nodes-base.code
+import { EventConfig, Handlers } from 'motia'
+import { z } from 'zod'
+
+export const config: EventConfig = {
+  type: 'event',
+  name: '{STEP_NAME}',
+  description: '{DESCRIPTION}',
+  subscribes: ['{PREVIOUS_TOPIC}'],
+  emits: ['{NEXT_TOPIC}'],
+  input: z.object({
+    requestId: z.string(),
+    // Auto-generated based on input requirements
+    {INPUT_SCHEMA}
+  }),
+  flows: ['{FLOW_NAME}']
+}
+
+export const handler: Handlers['{STEP_NAME}'] = async (input, { emit, logger, state }) => {
+  const { requestId } = input
+  
+  try {
+    // Transform data based on n8n function code
+    const transformedData = {TRANSFORMATION_LOGIC}
+    
+    // Store transformation result
+    await state.set('transformations', requestId, {
+      input,
+      output: transformedData,
+      transformedAt: new Date().toISOString()
+    })
+    
+    // Emit to next step
+    await emit({
+      topic: '{NEXT_TOPIC}',
+      data: {
+        requestId,
+        ...transformedData
+      }
+    })
+    
+    logger.info('Data transformation completed', { requestId })
+    
+  } catch (error) {
+    logger.error('Data transformation failed', { error: error.message, requestId })
+  }
+}
+```
+
+### 6. Conditional Logic Step Template
+```typescript
+// Template: conditional-step
+// Generated from: n8n-nodes-base.if
+import { EventConfig, Handlers } from 'motia'
+import { z } from 'zod'
+
+export const config: EventConfig = {
+  type: 'event',
+  name: '{STEP_NAME}',
+  description: '{DESCRIPTION}',
+  subscribes: ['{PREVIOUS_TOPIC}'],
+  emits: ['{TRUE_TOPIC}', '{FALSE_TOPIC}'],
+  input: z.object({
+    requestId: z.string(),
+    // Auto-generated based on condition requirements
+    {INPUT_SCHEMA}
+  }),
+  flows: ['{FLOW_NAME}']
+}
+
+export const handler: Handlers['{STEP_NAME}'] = async (input, { emit, logger, state }) => {
+  const { requestId } = input
+  
+  try {
+    // Evaluate condition from n8n IF node
+    const conditionResult = {CONDITION_LOGIC}
+    
+    // Store condition result
+    await state.set('conditions', requestId, {
+      condition: '{CONDITION_DESCRIPTION}',
+      result: conditionResult,
+      input,
+      evaluatedAt: new Date().toISOString()
+    })
+    
+    // Emit to appropriate path
+    if (conditionResult) {
+      await emit({
+        topic: '{TRUE_TOPIC}',
+        data: {
+          requestId,
+          conditionMet: true,
+          ...input
+        }
+      })
+    } else {
+      await emit({
+        topic: '{FALSE_TOPIC}',
+        data: {
+          requestId,
+          conditionMet: false,
+          ...input
+        }
+      })
+    }
+    
+    logger.info('Condition evaluated', { requestId, result: conditionResult })
+    
+  } catch (error) {
+    logger.error('Condition evaluation failed', { error: error.message, requestId })
+  }
+}
+```
+
+### 7. Database Operation Step Template
+```typescript
+// Template: postgres-step
+// Generated from: n8n-nodes-base.postgres
+import { EventConfig, Handlers } from 'motia'
+import { z } from 'zod'
+import { Pool } from 'pg'
+
+export const config: EventConfig = {
+  type: 'event',
+  name: '{STEP_NAME}',
+  description: '{DESCRIPTION}',
+  subscribes: ['{PREVIOUS_TOPIC}'],
+  emits: ['{NEXT_TOPIC}'],
+  input: z.object({
+    requestId: z.string(),
+    // Auto-generated based on database operation
+    {INPUT_SCHEMA}
+  }),
+  flows: ['{FLOW_NAME}']
+}
+
+export const handler: Handlers['{STEP_NAME}'] = async (input, { emit, logger, state }) => {
+  const { requestId } = input
+  const pool = new Pool({
+    connectionString: process.env.DATABASE_URL
+  })
+  
+  try {
+    // Execute database operation from n8n configuration
+    const query = `{SQL_QUERY}`
+    const values = [{QUERY_PARAMETERS}]
+    
+    const result = await pool.query(query, values)
+    
+    // Store database result
+    await state.set('db-results', requestId, {
+      query,
+      values,
+      result: result.rows,
+      rowCount: result.rowCount,
+      executedAt: new Date().toISOString()
+    })
+    
+    // Emit result to next step
+    await emit({
+      topic: '{NEXT_TOPIC}',
+      data: {
+        requestId,
+        dbResult: result.rows,
+        rowCount: result.rowCount,
+        originalInput: input
+      }
+    })
+    
+    logger.info('Database operation completed', { 
+      requestId, 
+      rowCount: result.rowCount 
+    })
+    
+  } catch (error) {
+    logger.error('Database operation failed', { error: error.message, requestId })
+  } finally {
+    await pool.end()
+  }
+}
+```
+
+## Workflow Type Examples
+
+### 1. Simple Automation: Price Monitor → Slack Alert
+
+**n8n Workflow**: 
+- Webhook → HTTP Request (API) → IF (price check) → Slack
+
+**Motia Conversion** (4 steps):
+```typescript
+// 01-price-webhook.step.ts - Webhook trigger
+// 02-price-fetcher.step.ts - HTTP request to price API  
+// 03-price-checker.step.ts - Conditional price evaluation
+// 04-slack-alerter.step.ts - Slack notification
+```
+
+### 2. Data Pipeline: CSV → Transform → Database
+
+**n8n Workflow**:
+- Webhook → Function (parse CSV) → Set (transform) → PostgreSQL
+
+**Motia Conversion** (4 steps):
+```typescript
+// 01-csv-webhook.step.ts - Receive CSV data
+// 02-csv-parser.step.ts - Parse CSV into structured data
+// 03-data-transformer.step.ts - Transform and validate data
+// 04-database-writer.step.ts - Store in PostgreSQL
+```
+
+### 3. E-commerce: Order → Payment → Fulfillment → Notification
+
+**n8n Workflow**:
+- Shopify Webhook → Stripe Payment → Inventory Check → Email + SMS
+
+**Motia Conversion** (5 steps):
+```typescript
+// 01-shopify-webhook.step.ts - Receive order
+// 02-payment-processor.step.ts - Process with Stripe
+// 03-inventory-checker.step.ts - Check stock levels
+// 04-fulfillment-manager.step.ts - Manage order fulfillment
+// 05-notification-sender.step.ts - Send confirmation email/SMS
+```
+
+### 4. IoT: Sensor Data → Analysis → Alert
+
+**n8n Workflow**:
+- Webhook → Function (validate) → IF (threshold) → Discord Alert
+
+**Motia Conversion** (4 steps):
+```typescript
+// 01-sensor-webhook.step.ts - Receive sensor data
+// 02-data-validator.step.ts - Validate sensor readings
+// 03-threshold-checker.step.ts - Check against thresholds
+// 04-discord-alerter.step.ts - Send Discord notifications
+```
+
+### 5. Social Media: Content → AI Analysis → Multi-Platform Post
+
+**n8n Workflow**:
+- Webhook → OpenAI (analysis) → Switch (platform) → Twitter + LinkedIn + Instagram
+
+**Motia Conversion** (6 steps):
+```typescript
+// 01-content-webhook.step.ts - Receive content
+// 02-ai-analyzer_step.py - AI content analysis
+// 03-platform-router.step.ts - Route to platforms
+// 04-twitter-poster.step.ts - Post to Twitter
+// 05-linkedin-poster.step.ts - Post to LinkedIn  
+// 06-instagram-poster.step.ts - Post to Instagram
+```
+
+## Domain-Specific Step Generation
+
+### Finance/Accounting Workflows
+```typescript
+// steps/finance/transaction-processor.step.ts
+export const config: EventConfig = {
+  type: 'event',
+  name: 'TransactionProcessor',
+  description: 'Process financial transactions with compliance checks',
+  subscribes: ['transaction.received'],
+  emits: ['transaction.validated', 'compliance.checked'],
+  flows: ['finance-processing']
+}
+
+// steps/finance/compliance-checker.step.ts  
+export const config: EventConfig = {
+  type: 'event',
+  name: 'ComplianceChecker',
+  description: 'Verify transaction compliance and risk assessment',
+  subscribes: ['transaction.validated'],
+  emits: ['compliance.approved', 'compliance.flagged'],
+  flows: ['finance-processing']
+}
+```
+
+### Healthcare Workflows
+```typescript
+// steps/healthcare/patient-data-processor.step.ts
+export const config: EventConfig = {
+  type: 'event',
+  name: 'PatientDataProcessor',
+  description: 'Process patient data with HIPAA compliance',
+  subscribes: ['patient.data.received'],
+  emits: ['patient.data.validated'],
+  flows: ['healthcare-processing']
+}
+
+// steps/healthcare/hipaa-validator.step.ts
+export const config: EventConfig = {
+  type: 'event', 
+  name: 'HIPAAValidator',
+  description: 'Ensure HIPAA compliance for patient data',
+  subscribes: ['patient.data.validated'],
+  emits: ['hipaa.compliant', 'hipaa.violation'],
+  flows: ['healthcare-processing']
+}
+```
+
+### Manufacturing/IoT Workflows
+```typescript
+// steps/manufacturing/sensor-data-processor.step.ts
+export const config: EventConfig = {
+  type: 'event',
+  name: 'SensorDataProcessor', 
+  description: 'Process industrial sensor data and metrics',
+  subscribes: ['sensor.data.received'],
+  emits: ['sensor.data.processed'],
+  flows: ['manufacturing-monitoring']
+}
+
+// steps/manufacturing/anomaly-detector.step.ts
+export const config: EventConfig = {
+  type: 'event',
+  name: 'AnomalyDetector',
+  description: 'Detect anomalies in manufacturing processes',
+  subscribes: ['sensor.data.processed'],
+  emits: ['anomaly.detected', 'status.normal'],
+  flows: ['manufacturing-monitoring']
+}
+```
+
+## Automatic Project Generation
+
+### Project Structure Generator
+```typescript
+function generateMotiaProject(n8nWorkflow: any): ProjectStructure {
+  const nodes = n8nWorkflow.nodes.filter(node => !node.type.includes('stickyNote'))
+  const stepCount = nodes.length
+  
+  return {
+    projectName: sanitizeProjectName(n8nWorkflow.name),
+    stepFiles: nodes.map((node, index) => ({
+      filename: `${String(index + 1).padStart(2, '0')}-${generateStepName(node)}.step.${getFileExtension(node)}`,
+      stepName: generateStepName(node),
+      nodeType: node.type,
+      motiaType: getMotiaStepType(node.type),
+      language: getLanguageForNode(node.type),
+      template: getTemplateForNode(node.type)
+    })),
+    dependencies: extractDependencies(nodes),
+    environmentVariables: extractEnvironmentVariables(nodes),
+    flows: [sanitizeFlowName(n8nWorkflow.name)]
+  }
+}
+```
+
+### Step Name Generator
+```typescript
+function generateStepName(node: any): string {
+  // Generate descriptive step names based on node type and purpose
+  const nodeTypeMap = {
+    'n8n-nodes-base.webhook': 'webhook-trigger',
+    'n8n-nodes-base.httpRequest': 'api-client',
+    'n8n-nodes-base.function': 'data-transformer',
+    'n8n-nodes-base.if': 'condition-checker',
+    'n8n-nodes-base.switch': 'data-router',
+    'n8n-nodes-base.googleSheets': 'sheets-logger',
+    'n8n-nodes-base.slack': 'slack-notifier',
+    'n8n-nodes-base.email': 'email-sender',
+    'n8n-nodes-base.postgres': 'database-writer',
+    'n8n-nodes-base.redis': 'cache-manager',
+    '@n8n/n8n-nodes-langchain.embeddingsOpenAi': 'openai-embeddings',
+    '@n8n/n8n-nodes-langchain.vectorStoreSupabase': 'supabase-vector',
+    '@n8n/n8n-nodes-langchain.agent': 'rag-agent'
+  }
+  
+  const baseName = nodeTypeMap[node.type] || 'processor'
+  
+  // Add domain context if available
+  const workflowName = node.name?.toLowerCase() || ''
+  if (workflowName.includes('agriculture')) return `agriculture-${baseName}`
+  if (workflowName.includes('finance')) return `finance-${baseName}`
+  if (workflowName.includes('healthcare')) return `healthcare-${baseName}`
+  
+  return baseName
+}
+```
+
+### Event Flow Generator
+```typescript
+function generateEventFlow(n8nConnections: any, nodes: any[]): EventFlow[] {
+  const eventFlow: EventFlow[] = []
+  const nodeMap = new Map(nodes.map(node => [node.name, node]))
+  
+  for (const [sourceNodeName, connections] of Object.entries(n8nConnections)) {
+    const sourceNode = nodeMap.get(sourceNodeName)
+    if (!sourceNode) continue
+    
+    for (const [connectionType, targetGroups] of Object.entries(connections)) {
+      for (const targets of targetGroups) {
+        for (const target of targets) {
+          const targetNode = nodeMap.get(target.node)
+          if (!targetNode) continue
+          
+          eventFlow.push({
+            from: sourceNodeName,
+            to: target.node,
+            topic: generateTopicName(sourceNode, targetNode, connectionType),
+            connectionType
+          })
+        }
+      }
+    }
+  }
+  
+  return eventFlow
+}
+
+function generateTopicName(sourceNode: any, targetNode: any, connectionType: string): string {
+  // Generate semantic topic names based on node purposes
+  const sourceAction = getNodeAction(sourceNode.type)
+  const targetAction = getNodeAction(targetNode.type)
+  
+  if (connectionType === 'main') {
+    return `${sourceAction}.completed`
+  } else if (connectionType === 'onError') {
+    return `${sourceAction}.failed`
+  } else {
+    return `${sourceAction}.${targetAction}`
+  }
+}
+
+function getNodeAction(nodeType: string): string {
+  const actionMap = {
+    'n8n-nodes-base.webhook': 'webhook',
+    'n8n-nodes-base.httpRequest': 'api',
+    'n8n-nodes-base.function': 'transform',
+    'n8n-nodes-base.if': 'condition',
+    'n8n-nodes-base.googleSheets': 'sheets',
+    'n8n-nodes-base.slack': 'slack',
+    'n8n-nodes-base.postgres': 'database',
+    '@n8n/n8n-nodes-langchain.embeddingsOpenAi': 'embeddings',
+    '@n8n/n8n-nodes-langchain.agent': 'agent'
+  }
+  
+  return actionMap[nodeType] || 'process'
+}
+```
+
+This universal converter ensures proper step granularity and supports all workflow types, not just AI/RAG patterns.

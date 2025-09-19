@@ -1,0 +1,806 @@
+---
+description: Complete n8n to Motia converter - handles ALL workflow types with proper step granularity and clean implementation
+globs: 
+alwaysApply: true
+---
+# Complete n8n to Motia Converter
+
+Transform ANY n8n workflow JSON into a complete, production-ready Motia backend with proper step granularity and clean implementation.
+
+## CONVERSION RULES
+
+### 1. Step Granularity Rule
+- **One n8n Node = One Motia Step**: Each significant n8n node becomes its own step file
+- **Proper Numbering**: Steps numbered sequentially (01, 02, 03, etc.)
+- **Atomic Responsibility**: Each step has single, clear purpose
+- **Complete Workflows**: Generate all steps needed for end-to-end functionality
+
+### 2. CORRECT Motia APIs (from [motia.dev/docs](https://www.motia.dev/docs))
+
+```typescript
+// ✅ CORRECT State API (scope, key, value pattern)
+await state.set(scope, key, value)           // Store data
+const data = await state.get(scope, key)     // Retrieve data
+await state.delete(scope, key)               // Delete key  
+await state.clear(scope)                     // Clear scope
+const items = await state.getGroup(scope)    // ✅ Get all items (REAL API from examples)
+
+// ✅ CORRECT Streams API
+await streams.streamName.set(groupId, id, data)          // Set data
+const data = await streams.streamName.get(groupId, id)   // Get data
+await streams.streamName.delete(groupId, id)             // Delete data
+const items = await streams.streamName.getGroup(groupId) // ✅ Get all (REAL API from examples)
+
+// ✅ CORRECT Handler signatures (only include what you use)
+export const handler: Handlers['StepName'] = async (input, { logger }) => {
+  // Only include logger if that's all you use
+}
+
+export const handler: Handlers['StepName'] = async (input, { emit, logger, state }) => {
+  // Include emit, logger, state only if you actually use all of them
+}
+```
+
+### 3. Clean Implementation Standards
+- **Minimal Imports**: Only import what you actually use
+- **No Middleware**: Don't add middleware unless explicitly requested
+- **Clean Handlers**: Only include context parameters that are used
+- **Latest Version**: Use Motia "^0.7.1-beta.132"
+- **No Unused Code**: Remove unused variables, imports, parameters
+
+### 4. Event Flow Integrity
+- **Complete Chains**: Every emit must have a corresponding subscribe
+- **No Orphan Events**: If no step subscribes, use emits: []
+- **Semantic Topics**: Use descriptive topic names (webhook.received, data.processed)
+- **Error Paths**: Include error handling events where appropriate
+
+## Universal Workflow Conversion
+
+### Conversion Process
+1. **Parse n8n JSON**: Extract nodes, connections, parameters
+2. **Generate Step Sequence**: One step per significant node
+3. **Create Event Flow**: Map connections to emit/subscribe pairs
+4. **Generate Files**: Create all step files with proper implementation
+5. **Add Configuration**: Generate package.json, config files, etc.
+
+### Node Type Mapping
+
+```typescript
+const NODE_TO_STEP_MAPPING = {
+  // === TRIGGERS ===
+  'n8n-nodes-base.webhook': {
+    stepType: 'api',
+    language: 'typescript',
+    generates: 'HTTP API endpoint'
+  },
+  'n8n-nodes-base.cron': {
+    stepType: 'cron', 
+    language: 'typescript',
+    generates: 'Scheduled task'
+  },
+  'n8n-nodes-base.manualTrigger': {
+    stepType: 'noop',
+    language: 'typescript',
+    generates: 'Manual trigger point'
+  },
+  
+  // === DATA PROCESSING ===
+  'n8n-nodes-base.function': {
+    stepType: 'event',
+    language: 'javascript',
+    generates: 'Data transformation'
+  },
+  'n8n-nodes-base.code': {
+    stepType: 'event', 
+    language: 'javascript', // or python based on code
+    generates: 'Custom logic execution'
+  },
+  'n8n-nodes-base.set': {
+    stepType: 'event',
+    language: 'typescript',
+    generates: 'Data manipulation'
+  },
+  'n8n-nodes-base.if': {
+    stepType: 'event',
+    language: 'typescript',
+    generates: 'Conditional logic'
+  },
+  'n8n-nodes-base.switch': {
+    stepType: 'event',
+    language: 'typescript', 
+    generates: 'Multi-path routing'
+  },
+  'n8n-nodes-base.merge': {
+    stepType: 'event',
+    language: 'typescript',
+    generates: 'Data aggregation'
+  },
+  'n8n-nodes-base.wait': {
+    stepType: 'event',
+    language: 'typescript',
+    generates: 'Delay/timing'
+  },
+  
+  // === EXTERNAL APIS ===
+  'n8n-nodes-base.httpRequest': {
+    stepType: 'event',
+    language: 'typescript',
+    generates: 'HTTP API client'
+  },
+  
+  // === DATABASES ===
+  'n8n-nodes-base.postgres': {
+    stepType: 'event',
+    language: 'typescript',
+    generates: 'PostgreSQL operations'
+  },
+  'n8n-nodes-base.mysql': {
+    stepType: 'event',
+    language: 'typescript',
+    generates: 'MySQL operations'
+  },
+  'n8n-nodes-base.redis': {
+    stepType: 'event',
+    language: 'typescript',
+    generates: 'Redis cache operations'
+  },
+  'n8n-nodes-base.mongodb': {
+    stepType: 'event',
+    language: 'typescript',
+    generates: 'MongoDB operations'
+  },
+  
+  // === BUSINESS APPS ===
+  'n8n-nodes-base.googleSheets': {
+    stepType: 'event',
+    language: 'typescript',
+    generates: 'Google Sheets integration'
+  },
+  'n8n-nodes-base.airtable': {
+    stepType: 'event',
+    language: 'typescript',
+    generates: 'Airtable operations'
+  },
+  'n8n-nodes-base.notion': {
+    stepType: 'event',
+    language: 'typescript',
+    generates: 'Notion integration'
+  },
+  'n8n-nodes-base.trello': {
+    stepType: 'event',
+    language: 'typescript',
+    generates: 'Trello project management'
+  },
+  'n8n-nodes-base.github': {
+    stepType: 'event',
+    language: 'typescript',
+    generates: 'GitHub operations'
+  },
+  'n8n-nodes-base.shopify': {
+    stepType: 'event',
+    language: 'typescript',
+    generates: 'Shopify e-commerce'
+  },
+  'n8n-nodes-base.stripe': {
+    stepType: 'event',
+    language: 'typescript',
+    generates: 'Stripe payments'
+  },
+  'n8n-nodes-base.hubspot': {
+    stepType: 'event',
+    language: 'typescript',
+    generates: 'HubSpot CRM'
+  },
+  'n8n-nodes-base.salesforce': {
+    stepType: 'event',
+    language: 'typescript',
+    generates: 'Salesforce integration'
+  },
+  
+  // === MESSAGING ===
+  'n8n-nodes-base.slack': {
+    stepType: 'event',
+    language: 'typescript',
+    generates: 'Slack messaging'
+  },
+  'n8n-nodes-base.discord': {
+    stepType: 'event',
+    language: 'typescript',
+    generates: 'Discord integration'
+  },
+  'n8n-nodes-base.telegram': {
+    stepType: 'event',
+    language: 'typescript',
+    generates: 'Telegram bot'
+  },
+  'n8n-nodes-base.whatsApp': {
+    stepType: 'event',
+    language: 'typescript',
+    generates: 'WhatsApp integration'
+  },
+  'n8n-nodes-base.email': {
+    stepType: 'event',
+    language: 'typescript',
+    generates: 'Email operations'
+  },
+  'n8n-nodes-base.sms': {
+    stepType: 'event',
+    language: 'typescript',
+    generates: 'SMS messaging'
+  },
+  
+  // === AI/ML NODES ===
+  '@n8n/n8n-nodes-langchain.textSplitterCharacterTextSplitter': {
+    stepType: 'event',
+    language: 'typescript',
+    generates: 'Text processing'
+  },
+  '@n8n/n8n-nodes-langchain.embeddingsOpenAi': {
+    stepType: 'event',
+    language: 'python',
+    generates: 'OpenAI embeddings'
+  },
+  '@n8n/n8n-nodes-langchain.embeddingsCohere': {
+    stepType: 'event',
+    language: 'python',
+    generates: 'Cohere embeddings'
+  },
+  '@n8n/n8n-nodes-langchain.embeddingsHuggingFace': {
+    stepType: 'event',
+    language: 'python',
+    generates: 'HuggingFace embeddings'
+  },
+  '@n8n/n8n-nodes-langchain.vectorStoreSupabase': {
+    stepType: 'event',
+    language: 'typescript',
+    generates: 'Supabase vector ops'
+  },
+  '@n8n/n8n-nodes-langchain.vectorStorePinecone': {
+    stepType: 'event',
+    language: 'typescript',
+    generates: 'Pinecone vector ops'
+  },
+  '@n8n/n8n-nodes-langchain.vectorStoreWeaviate': {
+    stepType: 'event',
+    language: 'typescript',
+    generates: 'Weaviate vector ops'
+  },
+  '@n8n/n8n-nodes-langchain.lmChatOpenAi': {
+    stepType: 'event',
+    language: 'python',
+    generates: 'OpenAI chat'
+  },
+  '@n8n/n8n-nodes-langchain.lmChatAnthropic': {
+    stepType: 'event',
+    language: 'python',
+    generates: 'Anthropic chat'
+  },
+  '@n8n/n8n-nodes-langchain.agent': {
+    stepType: 'event',
+    language: 'python',
+    generates: 'RAG agent'
+  }
+}
+```
+
+## Step Templates
+
+### 1. API Step Template (from webhook)
+```typescript
+import { ApiRouteConfig, Handlers } from 'motia'
+import { z } from 'zod'
+
+export const config: ApiRouteConfig = {
+  type: 'api',
+  name: '{STEP_NAME}',
+  description: '{DESCRIPTION}',
+  method: '{HTTP_METHOD}',
+  path: '{ENDPOINT_PATH}',
+  bodySchema: z.object({
+    // Generated based on expected input
+  }),
+  responseSchema: {
+    200: z.object({
+      requestId: z.string(),
+      status: z.string()
+    }),
+    400: z.object({ error: z.string() }),
+    500: z.object({ error: z.string() })
+  },
+  emits: ['{NEXT_TOPIC}'],
+  flows: ['{FLOW_NAME}']
+}
+
+export const handler: Handlers['{STEP_NAME}'] = async (req, { emit, logger, state }) => {
+  const requestId = crypto.randomUUID()
+  
+  await state.set('requests', requestId, {
+    ...req.body,
+    receivedAt: new Date().toISOString()
+  })
+  
+  await emit({
+    topic: '{NEXT_TOPIC}',
+    data: { requestId, ...req.body }
+  })
+  
+  logger.info('Request received', { requestId })
+  
+  return {
+    status: 200,
+    body: { requestId, status: 'processing' }
+  }
+}
+```
+
+### 2. Event Step Template (from function/transform)
+```typescript
+import { EventConfig, Handlers } from 'motia'
+import { z } from 'zod'
+
+export const config: EventConfig = {
+  type: 'event',
+  name: '{STEP_NAME}',
+  description: '{DESCRIPTION}',
+  subscribes: ['{PREVIOUS_TOPIC}'],
+  emits: ['{NEXT_TOPIC}'],
+  input: z.object({
+    requestId: z.string()
+    // Generated based on previous step output
+  }),
+  flows: ['{FLOW_NAME}']
+}
+
+export const handler: Handlers['{STEP_NAME}'] = async (input, { emit, logger, state }) => {
+  const { requestId } = input
+  
+  try {
+    // Process data based on n8n node logic
+    const result = processData(input)
+    
+    await state.set('{STATE_KEY}', requestId, {
+      input,
+      result,
+      processedAt: new Date().toISOString()
+    })
+    
+    await emit({
+      topic: '{NEXT_TOPIC}',
+      data: { requestId, ...result }
+    })
+    
+    logger.info('Processing completed', { requestId })
+    
+  } catch (error) {
+    logger.error('Processing failed', { error: error.message, requestId })
+  }
+}
+
+function processData(input: any) {
+  // Implementation based on n8n node function/code
+  return input
+}
+```
+
+### 3. Python AI Step Template
+```python
+config = {
+    "type": "event",
+    "name": "{STEP_NAME}",
+    "description": "{DESCRIPTION}",
+    "subscribes": ["{PREVIOUS_TOPIC}"],
+    "emits": ["{NEXT_TOPIC}"],
+    "input": {
+        "type": "object",
+        "properties": {
+            "requestId": {"type": "string"}
+            # Generated based on input requirements
+        },
+        "required": ["requestId"]
+    },
+    "flows": ["{FLOW_NAME}"]
+}
+
+async def handler(input_data, ctx):
+    request_id = input_data.get("requestId")
+    
+    try:
+        # AI/ML processing logic from n8n node
+        result = await process_with_ai(input_data)
+        
+        await ctx.state.set("{STATE_KEY}", request_id, {
+            "input": input_data,
+            "result": result,
+            "processedAt": ctx.utils.dates.now().isoformat()
+        })
+        
+        await ctx.emit({
+            "topic": "{NEXT_TOPIC}",
+            "data": {
+                "requestId": request_id,
+                **result
+            }
+        })
+        
+        ctx.logger.info(f"AI processing completed", request_id=request_id)
+        
+    except Exception as e:
+        ctx.logger.error(f"AI processing failed: {str(e)}", request_id=request_id)
+
+async def process_with_ai(input_data):
+    # Implementation based on n8n AI node configuration
+    return {"processed": True}
+```
+
+### 4. Integration Step Template (final steps)
+```typescript
+import { EventConfig, Handlers } from 'motia'
+import { z } from 'zod'
+
+export const config: EventConfig = {
+  type: 'event',
+  name: '{STEP_NAME}',
+  description: '{DESCRIPTION}',
+  subscribes: ['{PREVIOUS_TOPIC}'],
+  emits: [], // Final step - no further processing
+  input: z.object({
+    requestId: z.string()
+    // Generated based on integration requirements
+  }),
+  flows: ['{FLOW_NAME}']
+}
+
+export const handler: Handlers['{STEP_NAME}'] = async (input, { logger }) => {
+  const { requestId } = input
+  
+  try {
+    // Integration logic (Slack, Sheets, Email, etc.)
+    await performIntegration(input)
+    
+    logger.info('Integration completed', { requestId })
+    
+  } catch (error) {
+    logger.error('Integration failed', { error: error.message, requestId })
+  }
+}
+
+async function performIntegration(input: any) {
+  // Implementation based on n8n integration node
+}
+```
+
+## Complete Workflow Examples
+
+### Example 1: Simple Price Monitor (3 nodes → 3 steps)
+
+**n8n Workflow**:
+```json
+{
+  "nodes": [
+    {"name": "Webhook", "type": "n8n-nodes-base.webhook"},
+    {"name": "HTTP Request", "type": "n8n-nodes-base.httpRequest"}, 
+    {"name": "Slack", "type": "n8n-nodes-base.slack"}
+  ]
+}
+```
+
+**Generated Motia Backend**:
+```typescript
+// 01-webhook-trigger.step.ts
+import { ApiRouteConfig, Handlers } from 'motia'
+import { z } from 'zod'
+
+export const config: ApiRouteConfig = {
+  type: 'api',
+  name: 'WebhookTrigger',
+  description: 'Receive price monitoring requests',
+  method: 'POST',
+  path: '/price/monitor',
+  bodySchema: z.object({
+    symbol: z.string(),
+    threshold: z.number(),
+    channel: z.string().optional()
+  }),
+  emits: ['price.check.requested'],
+  flows: ['price-monitoring']
+}
+
+export const handler: Handlers['WebhookTrigger'] = async (req, { emit, logger, state }) => {
+  const requestId = crypto.randomUUID()
+  
+  await state.set('price-requests', requestId, {
+    ...req.body,
+    requestId,
+    createdAt: new Date().toISOString()
+  })
+  
+  await emit({
+    topic: 'price.check.requested',
+    data: { requestId, ...req.body }
+  })
+  
+  logger.info('Price check requested', { requestId, symbol: req.body.symbol })
+  
+  return { status: 200, body: { requestId, status: 'processing' } }
+}
+
+// 02-price-fetcher.step.ts
+import { EventConfig, Handlers } from 'motia'
+import { z } from 'zod'
+
+export const config: EventConfig = {
+  type: 'event',
+  name: 'PriceFetcher',
+  description: 'Fetch current price from external API',
+  subscribes: ['price.check.requested'],
+  emits: ['price.fetched'],
+  input: z.object({
+    requestId: z.string(),
+    symbol: z.string(),
+    threshold: z.number(),
+    channel: z.string().optional()
+  }),
+  flows: ['price-monitoring']
+}
+
+export const handler: Handlers['PriceFetcher'] = async (input, { emit, logger, state }) => {
+  const { requestId, symbol, threshold, channel } = input
+  
+  try {
+    const response = await fetch(`https://api.example.com/price/${symbol}`)
+    const data = await response.json()
+    const currentPrice = data.price
+    
+    await state.set('price-data', requestId, {
+      symbol,
+      currentPrice,
+      threshold,
+      fetchedAt: new Date().toISOString()
+    })
+    
+    await emit({
+      topic: 'price.fetched',
+      data: {
+        requestId,
+        symbol,
+        currentPrice,
+        threshold,
+        channel,
+        shouldAlert: currentPrice >= threshold
+      }
+    })
+    
+    logger.info('Price fetched', { requestId, symbol, currentPrice })
+    
+  } catch (error) {
+    logger.error('Price fetch failed', { error: error.message, requestId })
+  }
+}
+
+// 03-slack-notifier.step.ts
+import { EventConfig, Handlers } from 'motia'
+import { z } from 'zod'
+
+export const config: EventConfig = {
+  type: 'event',
+  name: 'SlackNotifier',
+  description: 'Send Slack notifications for price alerts',
+  subscribes: ['price.fetched'],
+  emits: [], // Final step
+  input: z.object({
+    requestId: z.string(),
+    symbol: z.string(),
+    currentPrice: z.number(),
+    threshold: z.number(),
+    channel: z.string().optional(),
+    shouldAlert: z.boolean()
+  }),
+  flows: ['price-monitoring']
+}
+
+export const handler: Handlers['SlackNotifier'] = async (input, { logger }) => {
+  const { requestId, symbol, currentPrice, threshold, channel, shouldAlert } = input
+  
+  if (shouldAlert) {
+    await sendSlackMessage({
+      channel: channel || '#alerts',
+      message: `🚨 Price Alert: ${symbol} reached $${currentPrice} (threshold: $${threshold})`,
+      requestId
+    })
+    
+    logger.info('Slack alert sent', { requestId, symbol, currentPrice })
+  } else {
+    logger.info('Price below threshold, no alert sent', { requestId, symbol, currentPrice })
+  }
+}
+
+async function sendSlackMessage(message: any) {
+  // Slack API implementation
+  console.log(`Slack: ${message.message}`)
+}
+```
+
+### Example 2: E-commerce Order Processing (6 nodes → 6 steps)
+
+**n8n Workflow**:
+```json
+{
+  "nodes": [
+    {"name": "Shopify Webhook", "type": "n8n-nodes-base.webhook"},
+    {"name": "Order Validator", "type": "n8n-nodes-base.function"},
+    {"name": "Payment Check", "type": "n8n-nodes-base.if"},
+    {"name": "Inventory Update", "type": "n8n-nodes-base.postgres"},
+    {"name": "Email Confirmation", "type": "n8n-nodes-base.email"},
+    {"name": "SMS Notification", "type": "n8n-nodes-base.sms"}
+  ]
+}
+```
+
+**Generated Motia Backend**:
+```typescript
+// 01-shopify-webhook.step.ts
+// 02-order-validator.step.js  
+// 03-payment-checker.step.ts
+// 04-inventory-updater.step.ts
+// 05-email-sender.step.ts
+// 06-sms-sender.step.ts
+```
+
+### Example 3: IoT Data Pipeline (5 nodes → 5 steps)
+
+**n8n Workflow**:
+```json
+{
+  "nodes": [
+    {"name": "Sensor Webhook", "type": "n8n-nodes-base.webhook"},
+    {"name": "Data Validator", "type": "n8n-nodes-base.function"},
+    {"name": "Anomaly Check", "type": "n8n-nodes-base.if"},
+    {"name": "Database Storage", "type": "n8n-nodes-base.postgres"},
+    {"name": "Discord Alert", "type": "n8n-nodes-base.discord"}
+  ]
+}
+```
+
+**Generated Motia Backend**:
+```typescript
+// 01-sensor-webhook.step.ts
+// 02-data-validator.step.js
+// 03-anomaly-checker.step.ts  
+// 04-database-writer.step.ts
+// 05-discord-alerter.step.ts
+```
+
+### Example 4: Social Media Automation (7 nodes → 7 steps)
+
+**n8n Workflow**:
+```json
+{
+  "nodes": [
+    {"name": "Content Webhook", "type": "n8n-nodes-base.webhook"},
+    {"name": "Content Analyzer", "type": "@n8n/n8n-nodes-langchain.lmChatOpenAi"},
+    {"name": "Platform Router", "type": "n8n-nodes-base.switch"},
+    {"name": "Twitter API", "type": "n8n-nodes-base.httpRequest"},
+    {"name": "LinkedIn API", "type": "n8n-nodes-base.httpRequest"},
+    {"name": "Instagram API", "type": "n8n-nodes-base.httpRequest"},
+    {"name": "Results Logger", "type": "n8n-nodes-base.googleSheets"}
+  ]
+}
+```
+
+**Generated Motia Backend**:
+```typescript
+// 01-content-webhook.step.ts
+// 02-content-analyzer_step.py
+// 03-platform-router.step.ts
+// 04-twitter-poster.step.ts
+// 05-linkedin-poster.step.ts
+// 06-instagram-poster.step.ts
+// 07-results-logger.step.ts
+```
+
+## Domain-Specific Optimizations
+
+### Finance Workflows
+```typescript
+// Add compliance checks, audit trails, security
+// Example additional steps:
+// - compliance-checker.step.ts
+// - audit-logger.step.ts
+// - risk-assessor.step.ts
+```
+
+### Healthcare Workflows  
+```typescript
+// Add HIPAA compliance, data encryption, patient privacy
+// Example additional steps:
+// - hipaa-validator.step.ts
+// - data-encryptor.step.ts
+// - privacy-checker.step.ts
+```
+
+### Manufacturing/IoT Workflows
+```typescript
+// Add real-time monitoring, predictive analytics, safety checks
+// Example additional steps:
+// - realtime-monitor.step.ts
+// - predictive-analyzer_step.py
+// - safety-checker.step.ts
+```
+
+### Agriculture Workflows
+```typescript
+// Add weather integration, seasonal adjustments, crop-specific logic
+// Example additional steps:
+// - weather-integrator.step.ts
+// - seasonal-adjuster.step.ts
+// - crop-analyzer_step.py
+```
+
+## Project Generation
+
+### Complete Project Structure
+```
+{workflow-name}/
+├── steps/
+│   ├── 01-{first-node}.step.{ext}
+│   ├── 02-{second-node}.step.{ext}
+│   ├── 03-{third-node}.step.{ext}
+│   └── ... (one file per n8n node)
+├── services/
+│   ├── integrations/
+│   │   ├── slack.service.ts
+│   │   ├── sheets.service.ts
+│   │   └── email.service.ts
+│   └── domain/
+│       └── {domain}.service.ts
+├── package.json
+├── requirements.txt (if Python steps)
+├── config.yml
+├── types.d.ts
+├── .env.example
+└── README.md
+```
+
+### Auto-Generated package.json
+```json
+{
+  "name": "{workflow-name}",
+  "version": "1.0.0",
+  "description": "Generated from n8n workflow: {original-name}",
+  "scripts": {
+    "dev": "motia dev",
+    "build": "motia build", 
+    "start": "motia start",
+    "test": "jest"
+  },
+  "dependencies": {
+    "motia": "^0.7.1-beta.132",
+    "zod": "^3.22.0"
+    // Additional dependencies based on nodes used
+  },
+  "devDependencies": {
+    "@types/node": "^20.10.0",
+    "typescript": "^5.3.0",
+    "jest": "^29.7.0"
+  }
+}
+```
+
+### Auto-Generated config.yml
+```yaml
+state:
+  adapter: memory # or redis for production
+  ttl: 3600
+
+logging:
+  level: info
+  format: json
+
+flows:
+  - name: {flow-name}
+    description: "Generated from n8n workflow: {original-name}"
+    steps:
+      # List all generated steps
+```
+
+This complete converter ensures proper step granularity and supports ALL workflow types with clean, maintainable code.
